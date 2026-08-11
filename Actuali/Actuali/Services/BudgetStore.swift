@@ -155,6 +155,7 @@ final class BudgetStore: ObservableObject {
     @Published var currencyCode: String = "USD" {
         didSet {
             UserDefaults.standard.set(currencyCode, forKey: "currencyCode")
+            publishWidgetSnapshot()
         }
     }
 
@@ -164,6 +165,7 @@ final class BudgetStore: ObservableObject {
     @Published var useNarrowCurrencySymbol: Bool = false {
         didSet {
             UserDefaults.standard.set(useNarrowCurrencySymbol, forKey: "useNarrowCurrencySymbol")
+            publishWidgetSnapshot()
         }
     }
 
@@ -230,6 +232,7 @@ final class BudgetStore: ObservableObject {
     @Published var hideBalances: Bool = false {
         didSet {
             UserDefaults.standard.set(hideBalances, forKey: "hideBalances")
+            publishWidgetSnapshot()
         }
     }
 
@@ -979,6 +982,7 @@ final class BudgetStore: ObservableObject {
         lastSyncTime = nil
         syncState = .idle
         dataVersion += 1
+        clearWidgetSnapshot()
     }
 
     /// Load the auth token, migrating from UserDefaults to Keychain on first run.
@@ -1133,6 +1137,7 @@ final class BudgetStore: ObservableObject {
             payees = fetchedPayees
             currentBudgetMonth = fetchedBudgetMonth
             dataVersion += 1
+            publishWidgetSnapshot()
 
             // Configure sync client
             let nodeId = UserDefaults.standard.string(forKey: "nodeId") ?? {
@@ -1269,6 +1274,7 @@ final class BudgetStore: ObservableObject {
             payees = fetchedPayees
             currentBudgetMonth = fetchedBudgetMonth
             dataVersion += 1
+            publishWidgetSnapshot()
         } catch is CancellationError {
             // The caller's task was cancelled (e.g. a .refreshable task the
             // system tore down). Nothing failed — never alarm the user.
