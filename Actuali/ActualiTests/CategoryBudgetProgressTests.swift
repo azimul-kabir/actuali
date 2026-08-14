@@ -83,6 +83,39 @@ struct CategoryBudgetProgressTests {
         #expect(makeCategory(budgeted: 10000, spent: -12000, available: -2000).progressState == .overspent)
     }
 
+    @Test func spendingPlanStatusesUsePlainEnvelopeLanguage() {
+        #expect(makeCategory(budgeted: 0, spent: 0, available: 0).spendingPlanStatus == .noMoneyAssigned)
+        #expect(makeCategory(budgeted: 10000, spent: 0, available: 10000).spendingPlanStatus == .funded)
+        #expect(makeCategory(budgeted: 10000, spent: -4000, available: 6000).spendingPlanStatus == .partiallySpent)
+        #expect(makeCategory(budgeted: 10000, spent: -10000, available: 0).spendingPlanStatus == .fullySpent)
+        #expect(makeCategory(budgeted: 10000, spent: -12000, available: -2000).spendingPlanStatus == .overspent)
+        #expect(makeCategory(budgeted: 0, spent: 0, available: 5000, carryover: 5000).spendingPlanStatus == .carryingForward)
+    }
+
+    @Test func currentSpendingTakesPriorityOverCarryForward() {
+        let category = makeCategory(
+            budgeted: 0,
+            spent: -5000,
+            available: 5000,
+            carryover: 10000
+        )
+        #expect(category.spendingPlanStatus == .partiallySpent)
+    }
+
+    @Test func positiveActivityIsNotCalledSpending() {
+        let refund = makeCategory(budgeted: 0, spent: 1000, available: 1000)
+        #expect(refund.spendingPlanStatus == .funded)
+    }
+
+    @Test func trackingBudgetsTranslateTheSameStates() {
+        #expect(SpendingPlanStatus.noMoneyAssigned.title(isTracking: true) == "No budget set")
+        #expect(SpendingPlanStatus.funded.title(isTracking: true) == "Budget set")
+        #expect(SpendingPlanStatus.carryingForward.title(isTracking: true) == "Budget set")
+        #expect(SpendingPlanStatus.partiallySpent.title(isTracking: true) == "Within budget")
+        #expect(SpendingPlanStatus.fullySpent.title(isTracking: true) == "Budget used")
+        #expect(SpendingPlanStatus.overspent.title(isTracking: true) == "Over budget")
+    }
+
     @Test func quickAssignUsesActualHistoryAndProducesFinalAmounts() {
         let current = makeCategory(budgeted: 10000, spent: -4000, available: 6000)
         let history = [

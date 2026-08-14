@@ -161,6 +161,51 @@ enum CategoryProgressState: Equatable {
     case overspent
 }
 
+enum SpendingPlanStatus: Equatable {
+    case noMoneyAssigned
+    case funded
+    case partiallySpent
+    case fullySpent
+    case overspent
+    case carryingForward
+
+    func title(isTracking: Bool) -> String {
+        if isTracking {
+            switch self {
+            case .noMoneyAssigned: "No budget set"
+            case .fullySpent: "Budget used"
+            case .overspent: "Over budget"
+            case .partiallySpent: "Within budget"
+            case .funded, .carryingForward: "Budget set"
+            }
+        } else {
+            switch self {
+            case .noMoneyAssigned: "No money assigned"
+            case .funded: "Funded"
+            case .partiallySpent: "Partially spent"
+            case .fullySpent: "Fully spent"
+            case .overspent: "Overspent"
+            case .carryingForward: "Carrying money forward"
+            }
+        }
+    }
+}
+
+extension CategoryBudget {
+    /// Plain-language envelope state derived entirely from Actual's synced
+    /// monthly values. Current spending takes priority over carry-forward so
+    /// a category in use says what needs attention now; positive activity is
+    /// not mislabelled as spending.
+    var spendingPlanStatus: SpendingPlanStatus {
+        if available < 0 { return .overspent }
+        if spent < 0, available == 0 { return .fullySpent }
+        if spent < 0 { return .partiallySpent }
+        if carryover > 0 { return .carryingForward }
+        if budgeted == 0, spent == 0, available == 0 { return .noMoneyAssigned }
+        return .funded
+    }
+}
+
 /// Local-only lenses over a month's expense envelopes. These deliberately
 /// use values Actual already syncs instead of introducing YNAB-style target
 /// state that the Actual data model cannot round-trip.

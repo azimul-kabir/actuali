@@ -660,13 +660,17 @@ struct CategoryBudgetRow: View {
                 Button {
                     onShowDetails(category)
                 } label: {
-                    Text(category.categoryName)
-                        .font(.subheadline)
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.85)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(category.categoryName)
+                            .font(.subheadline)
+                            .lineLimit(2)
+                            .minimumScaleFactor(0.85)
+                        CategoryStatusLabel(category: category)
+                    }
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Details for \(category.categoryName)")
+                .accessibilityHint(statusTitle)
                 Spacer(minLength: 4)
                 Button {
                     onEditBudget(category)
@@ -713,6 +717,12 @@ struct CategoryBudgetRow: View {
         }
         .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
     }
+
+    private var statusTitle: String {
+        category.spendingPlanStatus.title(
+            isTracking: budgetStore.currentBudgetMonth?.isTrackingBudget == true
+        )
+    }
 }
 
 /// Clean-style category row, matching the App Store screenshots: name and a
@@ -740,6 +750,7 @@ struct CleanCategoryBudgetRow: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Details for \(category.categoryName)")
+                .accessibilityHint(statusTitle)
                 Spacer()
                 // A zero balance has nothing to move and nothing to cover, so
                 // it stays a plain label.
@@ -755,6 +766,7 @@ struct CleanCategoryBudgetRow: View {
                     ? "Cover overspending for \(category.categoryName)"
                     : "Move money from \(category.categoryName)")
             }
+            CategoryStatusLabel(category: category)
             if budgetStore.showBudgetProgressBars, category.showsProgressBar {
                 CategoryProgressBar(
                     fraction: category.progressFraction,
@@ -798,6 +810,52 @@ struct CleanCategoryBudgetRow: View {
             }
         }
         .padding(.vertical, 2)
+    }
+
+    private var statusTitle: String {
+        category.spendingPlanStatus.title(
+            isTracking: budgetStore.currentBudgetMonth?.isTrackingBudget == true
+        )
+    }
+}
+
+private extension SpendingPlanStatus {
+    var color: Color {
+        switch self {
+        case .overspent: .red
+        case .fullySpent: .orange
+        case .partiallySpent: .blue
+        case .funded: .green
+        case .carryingForward: .teal
+        case .noMoneyAssigned: .secondary
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .overspent: "exclamationmark.circle.fill"
+        case .fullySpent: "checkmark.circle"
+        case .partiallySpent: "circle.lefthalf.filled"
+        case .funded: "checkmark.circle.fill"
+        case .carryingForward: "arrow.forward.circle.fill"
+        case .noMoneyAssigned: "circle.dashed"
+        }
+    }
+}
+
+struct CategoryStatusLabel: View {
+    @EnvironmentObject private var budgetStore: BudgetStore
+    let category: CategoryBudget
+
+    private var status: SpendingPlanStatus { category.spendingPlanStatus }
+
+    var body: some View {
+        Label(
+            status.title(isTracking: budgetStore.currentBudgetMonth?.isTrackingBudget == true),
+            systemImage: status.systemImage
+        )
+        .font(.caption2.weight(.medium))
+        .foregroundStyle(status.color)
     }
 }
 
@@ -1103,27 +1161,11 @@ struct CategoryBudgetDetailSheet: View {
     }
 
     private var statusTitle: String {
-        switch (isTracking, category.progressState) {
-        case (_, .overspent): isTracking ? "Over budget" : "Overspent"
-        case (true, .funded): "Budget set"
-        case (false, .funded): "Funded"
-        case (true, .spending): "Within budget"
-        case (false, .spending): "On track"
-        case (true, .spent): "Budget used"
-        case (false, .spent): "Fully spent"
-        case (true, .unassigned): "No budget set"
-        case (false, .unassigned): "Not funded"
-        }
+        category.spendingPlanStatus.title(isTracking: isTracking)
     }
 
     private var statusColor: Color {
-        switch category.progressState {
-        case .overspent: .red
-        case .spent: .orange
-        case .spending: .blue
-        case .funded: .green
-        case .unassigned: .secondary
-        }
+        category.spendingPlanStatus.color
     }
 
     var body: some View {
@@ -1132,9 +1174,7 @@ struct CategoryBudgetDetailSheet: View {
                 Section {
                     VStack(alignment: .leading, spacing: 12) {
                         HStack {
-                            Label(statusTitle, systemImage: category.isOverspent
-                                ? "exclamationmark.circle.fill"
-                                : "checkmark.circle.fill")
+                            Label(statusTitle, systemImage: category.spendingPlanStatus.systemImage)
                                 .font(.headline)
                                 .foregroundStyle(statusColor)
                             Spacer()
