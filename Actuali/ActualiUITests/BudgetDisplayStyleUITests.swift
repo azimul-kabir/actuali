@@ -113,4 +113,29 @@ final class BudgetDisplayStyleUITests: XCTestCase {
         XCTAssertTrue(groceries.waitForExistence(timeout: 5))
         XCTAssertFalse(app.buttons["Details for Rent"].exists)
     }
+
+    @MainActor
+    func testCategoryActionsAndQuickAssignCanCollapse() throws {
+        let app = XCUIApplication()
+        app.launchArguments = [
+            "-loadDemoData", "-budgetDisplayStyle", "clean", "-initialTab", "1",
+        ]
+        app.launch()
+
+        let groceries = app.buttons["Details for Groceries"].firstMatch
+        XCTAssertTrue(groceries.waitForExistence(timeout: 10))
+        groceries.tap()
+
+        let actions = app.buttons["Actions, expanded"]
+        XCTAssertTrue(actions.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["Assign Money"].exists)
+        actions.tap()
+        XCTAssertTrue(app.buttons["Actions, collapsed"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["Assign Money"].exists)
+
+        let quickAssign = app.buttons["Quick Assign, expanded"]
+        XCTAssertTrue(quickAssign.waitForExistence(timeout: 10))
+        quickAssign.tap()
+        XCTAssertTrue(app.buttons["Quick Assign, collapsed"].waitForExistence(timeout: 5))
+    }
 }
