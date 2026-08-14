@@ -38,14 +38,8 @@ final class AddTransactionPostSaveUITests: XCTestCase {
         app.launchArguments = ["-loadDemoData", "-initialTab", "0"]
         app.launch()
 
-        let accountRow = app.buttons.matching(
-            NSPredicate(format: "label CONTAINS 'Chase Checking'")
-        ).firstMatch
-        XCTAssertTrue(accountRow.waitForExistence(timeout: 10), "Chase Checking row not found")
-        accountRow.tap()
-
-        let addButton = app.navigationBars.buttons["Add"]
-        XCTAssertTrue(addButton.waitForExistence(timeout: 5), "'+' toolbar button not found")
+        let addButton = app.buttons["Add Transaction"].firstMatch
+        XCTAssertTrue(addButton.waitForExistence(timeout: 10), "Home add button not found")
         addButton.tap()
 
         let addTitle = app.navigationBars["Add Transaction"]
@@ -59,6 +53,37 @@ final class AddTransactionPostSaveUITests: XCTestCase {
                       "add sheet stayed open after saving")
         XCTAssertTrue(app.navigationBars["Chase Checking"].waitForExistence(timeout: 5),
                       "did not land back on the account's transaction list")
+    }
+
+    @MainActor
+    func testSaveAndAddAnotherKeepsSheetOpenAndResetsAmount() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["-loadDemoData", "-initialTab", "0"]
+        app.launch()
+
+        let addButton = app.buttons["Add Transaction"].firstMatch
+        XCTAssertTrue(addButton.waitForExistence(timeout: 10), "Home add button not found")
+        addButton.tap()
+
+        let addTitle = app.navigationBars["Add Transaction"]
+        XCTAssertTrue(addTitle.waitForExistence(timeout: 5), "add sheet did not present")
+
+        let amountField = app.textFields.matching(
+            NSPredicate(format: "placeholderValue == '0.00'")
+        ).firstMatch
+        XCTAssertTrue(amountField.waitForExistence(timeout: 5), "amount field not found")
+        amountField.tap()
+        amountField.typeText("500")
+        app.buttons["Done"].tap()
+
+        let repeatSave = app.buttons["Save & Add Another"]
+        XCTAssertTrue(repeatSave.waitForExistence(timeout: 5), "repeat-save button not found")
+        repeatSave.tap()
+
+        XCTAssertTrue(addTitle.waitForExistence(timeout: 5), "add sheet closed after repeat save")
+        XCTAssertEqual(amountField.value as? String, "", "amount did not reset")
+        XCTAssertEqual(app.buttons["Account, Chase Checking"].exists, true,
+                       "selected account was not preserved")
     }
 
     @MainActor

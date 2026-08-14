@@ -442,7 +442,7 @@ struct AddTransactionView: View {
                 }
 
                 Section {
-                    Button(action: { Task { await saveTransaction() } }) {
+                    Button(action: { Task { await saveTransaction(keepOpen: false) } }) {
                         HStack {
                             Spacer()
                             Text(saveButtonTitle)
@@ -456,6 +456,17 @@ struct AddTransactionView: View {
                     // its own belongs to the focused field; ⌘Return is the
                     // whole form. Inert while the save is disabled.
                     .keyboardShortcut(.return, modifiers: .command)
+
+                    if !isEditing && !isTransfer {
+                        Button(action: { Task { await saveTransaction(keepOpen: true) } }) {
+                            HStack {
+                                Spacer()
+                                Label("Save & Add Another", systemImage: "plus")
+                                Spacer()
+                            }
+                        }
+                        .disabled(saveDisabled)
+                    }
                 }
             }
             .readableWidth()
@@ -636,7 +647,7 @@ struct AddTransactionView: View {
         return false
     }
 
-    private func saveTransaction() async {
+    private func saveTransaction(keepOpen: Bool) async {
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }
@@ -658,7 +669,12 @@ struct AddTransactionView: View {
 
         do {
             try await budgetStore.saveTransaction(form, editing: editing)
-            if isEditing || isPresented {
+            if keepOpen {
+                // Repeated entry keeps the account selection — often the
+                // slowest choice in the form — while clearing transaction-
+                // specific values for the next purchase.
+                resetForm()
+            } else if isEditing || isPresented {
                 // Presented flows (edit, account-detail "+", notification
                 // prefill) close; the account-detail host is already the
                 // saved transaction's list.
