@@ -62,16 +62,6 @@ struct HomeView: View {
                 .padding(.bottom, 28)
             }
             .navigationTitle("Home")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showingAddTransaction = true
-                    } label: {
-                        Label("Add Transaction", systemImage: "plus")
-                    }
-                    .disabled(defaultAccountId == nil)
-                }
-            }
             .safeAreaInset(edge: .bottom) {
                 Button {
                     showingAddTransaction = true
@@ -133,9 +123,25 @@ struct HomeView: View {
                 Text("This month")
                     .font(.headline)
                 Spacer()
-                Text(month.month)
+                Text(formattedMonth(month.month))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
+            }
+
+            if let toBudget = month.toBudget {
+                VStack(alignment: .leading, spacing: 5) {
+                    Label("Ready to assign", systemImage: "tray.full")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Text(formatted(toBudget))
+                        .font(.title2.weight(.bold))
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                Divider()
             }
 
             HStack(alignment: .firstTextBaseline) {
@@ -152,17 +158,6 @@ struct HomeView: View {
                     value: formatted(month.totalSpent),
                     systemImage: "arrow.down.circle"
                 )
-            }
-
-            if let toBudget = month.toBudget {
-                HStack {
-                    Label("Ready to assign", systemImage: "tray.full")
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text(formatted(toBudget))
-                        .fontWeight(.semibold)
-                }
-                .font(.subheadline)
             }
         }
         .padding()
@@ -261,6 +256,26 @@ struct HomeView: View {
                 .minimumScaleFactor(0.7)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func formattedMonth(_ value: String) -> String {
+        let parts = value.split(separator: "-")
+        guard parts.count == 2,
+              let year = Int(parts[0]),
+              let month = Int(parts[1]) else {
+            return value
+        }
+
+        var components = DateComponents()
+        components.year = year
+        components.month = month
+        components.day = 1
+
+        guard let date = Calendar.current.date(from: components) else {
+            return value
+        }
+
+        return date.formatted(.dateTime.month(.wide).year())
     }
 
     private func transactionDirectionIcon(for transaction: Transaction) -> String {
