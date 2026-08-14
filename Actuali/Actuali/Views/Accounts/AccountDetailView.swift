@@ -30,6 +30,17 @@ struct AccountDetailView: View {
         return trimmed.isEmpty ? nil : trimmed
     }
 
+    private var runningBalances: [String: Int] {
+        guard budgetStore.transactionDisplayMode == .groupedByDate,
+              searchQuery == nil,
+              !budgetStore.hideClearedTransactions,
+              let pager else { return [:] }
+        return TransactionRunningBalance.values(
+            currentBalance: currentBalance,
+            transactions: pager.transactions
+        )
+    }
+
     /// The pager is created on first use rather than in init because its
     /// fetch closure needs the environment store, which isn't available
     /// until body/task time. Rebuilt when the account changes: the closure
@@ -162,6 +173,7 @@ struct AccountDetailView: View {
                                 TransactionListRow(transaction: transaction,
                                                    showAccount: false,
                                                    showDate: false,
+                                                   runningBalance: runningBalances[transaction.id],
                                                    editing: $editingTransaction)
                             }
                             // The sentinel rides in the last date section so
@@ -297,6 +309,21 @@ struct AccountDetailView: View {
             await budgetStore.sync()
             await reload()
         }
+    }
+}
+
+/// Balances after each transaction in a newest-first account register. The
+/// current account balance belongs to the newest row; walking backward removes
+/// each transaction to reveal the balance after the next older row.
+enum TransactionRunningBalance {
+    static func values(currentBalance: Int, transactions: [Transaction]) -> [String: Int] {
+        var balance = currentBalance
+        var values: [String: Int] = [:]
+        for transaction in transactions {
+            values[transaction.id] = balance
+            balance -= transaction.amount
+        }
+        return values
     }
 }
 
