@@ -253,4 +253,19 @@ struct SpendingEngineTests {
         // 300000 / 31 × 14 = 135483.87…
         #expect(result.comparisonCents == 135484)
     }
+
+    @Test func drillDownUsesDisplayedMonthThroughToday() {
+        let comparison = tx(date: 20260410, amount: -8000)
+        let current = tx(date: 20260505, amount: -5000)
+        let future = tx(date: 20260520, amount: -9000)
+        let older = tx(date: 20260310, amount: -7000)
+
+        let result = SpendingEngine.drillDownTransactions(
+            meta: meta(mode: .singleMonth),
+            transactions: [comparison, current, future, older],
+            today: asOf
+        )
+
+        #expect(result.map(\.id) == [current.id])
+    }
 }

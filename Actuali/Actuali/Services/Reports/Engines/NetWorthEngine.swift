@@ -11,6 +11,26 @@ struct NetWorthData: Equatable {
 
 enum NetWorthEngine {
 
+    static func drillDownTransactions(
+        meta: NetWorthMeta?,
+        transactions: [Transaction],
+        today: Date,
+        context: ConditionsFilter.Context = .empty
+    ) -> [Transaction] {
+        let (start, end) = TimeFrame.resolve(meta?.timeFrame, asOf: today)
+        let startYMD = ymdInt(from: start)
+        let endYMD = ymdInt(from: end)
+        return transactions.filter {
+            !$0.tombstone && $0.date >= startYMD && $0.date <= endYMD
+                && ConditionsFilter.matches(
+                    transaction: $0,
+                    conditions: meta?.conditions,
+                    op: meta?.conditionsOp,
+                    context: context
+                )
+        }
+    }
+
     static func compute(
         meta: NetWorthMeta?,
         transactions: [Transaction],

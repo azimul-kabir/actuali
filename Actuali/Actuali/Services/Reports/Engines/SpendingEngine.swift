@@ -13,6 +13,41 @@ struct SpendingData: Equatable {
 /// off-budget accounts already removed by the caller (spendingScope).
 enum SpendingEngine {
 
+    static func drillDownTransactions(
+        meta: SpendingMeta?,
+        transactions: [Transaction],
+        today: Date,
+        context: ConditionsFilter.Context = .empty
+    ) -> [Transaction] {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let components = calendar.dateComponents([.year, .month], from: today)
+        guard let currentMonth = calendar.date(from: DateComponents(
+            year: components.year, month: components.month, day: 1
+        )) else { return [] }
+        let (compare, _) = resolveMonths(
+            meta: meta,
+            currentMonthStart: currentMonth,
+            calendar: calendar
+        )
+        let month = calendar.dateComponents([.year, .month], from: compare)
+        let throughDay = compare == currentMonth ? calendar.component(.day, from: today) : nil
+        return transactions.filter { transaction in
+            guard !transaction.tombstone else { return false }
+            let date = Transaction.date(fromYYYYMMDD: transaction.date)
+            let parts = calendar.dateComponents([.year, .month, .day], from: date)
+            return parts.year == month.year
+                && parts.month == month.month
+                && (throughDay.map { (parts.day ?? 0) <= $0 } ?? true)
+                && ConditionsFilter.matches(
+                    transaction: transaction,
+                    conditions: meta?.conditions,
+                    op: meta?.conditionsOp,
+                    context: context
+                )
+        }
+    }
+
     static func compute(
         meta: SpendingMeta?,
         transactions: [Transaction],

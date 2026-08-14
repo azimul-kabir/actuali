@@ -5,6 +5,8 @@ struct SpendingWidgetView: View {
     let displayName: String
     let data: SpendingData
     let comparisonLabel: String
+    let explanation: String
+    let onOpenTransactions: () -> Void
 
     private var delta: Int { data.currentSpentCents - data.comparisonCents }
 
@@ -44,6 +46,14 @@ struct SpendingWidgetView: View {
                 .font(.subheadline)
                 .foregroundStyle(deltaColor)
             }
+            Button(action: onOpenTransactions) {
+                Label("Why this changed", systemImage: "arrow.up.right.circle")
+                    .font(.subheadline)
+            }
+            Text(explanation)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
         }
         .padding()
         .background(Color(.secondarySystemBackground))

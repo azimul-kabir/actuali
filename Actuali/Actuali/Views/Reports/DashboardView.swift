@@ -20,6 +20,7 @@ struct DashboardView: View {
     @State private var reportBudgets = BudgetDatabase.ReportBudgetData()
     @State private var trackingBudgetMonths: [BalanceForecastBudgetMonth] = []
     @State private var forecastSchedules: [Schedule] = []
+    @State private var transactionsDestination: ReportTransactionsDestination?
 
     /// Unsupported widgets never render as cards; a single top banner notes
     /// that only a limited set of reports is available.
@@ -82,6 +83,9 @@ struct DashboardView: View {
             // change anywhere in the app (edits on other tabs, sync,
             // scheduled posts) — not just on first appearance.
             .task(id: budgetStore.dataVersion) { await loadTransactions() }
+            .navigationDestination(item: $transactionsDestination) { destination in
+                ReportTransactionsView(destination: destination)
+            }
         }
     }
 
@@ -153,7 +157,22 @@ struct DashboardView: View {
             WidgetCard(transactions: reportTransactions, loadingHeight: 180) { transactions in
                 NetWorthEngine.compute(meta: meta, transactions: transactions, today: Date(), context: conditionsContext)
             } content: { data in
-                NetWorthWidgetView(displayName: widget.displayName, data: data)
+                let transactions = NetWorthEngine.drillDownTransactions(
+                    meta: meta, transactions: reportTransactions ?? [], today: Date(), context: conditionsContext
+                )
+                let explanation = ReportChangeSummary.netWorth(data: data, transactions: transactions)
+                NetWorthWidgetView(
+                    displayName: widget.displayName,
+                    data: data,
+                    explanation: explanation,
+                    onOpenTransactions: {
+                        transactionsDestination = .init(
+                            title: widget.displayName,
+                            explanation: explanation,
+                            transactions: transactions
+                        )
+                    }
+                )
             }
         case .cashFlow(_, let meta):
             WidgetCard(transactions: reportTransactions, loadingHeight: 200) { transactions in
@@ -175,10 +194,25 @@ struct DashboardView: View {
                                        categoryGroups: budgetStore.categoryGroups,
                                        today: Date(), context: conditionsContext)
             } content: { data in
+                let transactions = SpendingEngine.drillDownTransactions(
+                    meta: meta,
+                    transactions: spendingScope(reportTransactions ?? []),
+                    today: Date(),
+                    context: conditionsContext
+                )
+                let explanation = ReportChangeSummary.spending(data: data, transactions: transactions)
                 SpendingWidgetView(
                     displayName: widget.displayName,
                     data: data,
-                    comparisonLabel: comparisonLabel(for: meta)
+                    comparisonLabel: comparisonLabel(for: meta),
+                    explanation: explanation,
+                    onOpenTransactions: {
+                        transactionsDestination = .init(
+                            title: widget.displayName,
+                            explanation: explanation,
+                            transactions: transactions
+                        )
+                    }
                 )
             }
         case .markdown(_, let meta):

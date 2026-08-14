@@ -111,6 +111,12 @@ struct MainTabView: View {
             } label: {
                 Label("Settings", systemImage: "gear")
             }
+
+            Tab(value: 5, role: .search) {
+                GlobalSearchView { selectedTab = $0 }
+            } label: {
+                Label("Search", systemImage: "magnifyingglass")
+            }
         }
     }
 }

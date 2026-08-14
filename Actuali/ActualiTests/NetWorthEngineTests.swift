@@ -69,4 +69,26 @@ struct NetWorthEngineTests {
         let result = NetWorthEngine.compute(meta: meta, transactions: [], today: asOf)
         #expect(result.points.count == 5)
     }
+
+    @Test func drillDownUsesWidgetTimeFrameAndExcludesTombstones() {
+        let included = tx(date: 20260315, amount: 10000)
+        let outside = tx(date: 20251215, amount: 20000)
+        let deleted = tx(date: 20260415, amount: 30000, tombstone: true)
+        let meta = NetWorthMeta(
+            name: nil,
+            timeFrame: WidgetTimeFrame(start: nil, end: nil, mode: .yearToDate),
+            conditions: nil,
+            conditionsOp: nil,
+            interval: .monthly,
+            mode: nil
+        )
+
+        let result = NetWorthEngine.drillDownTransactions(
+            meta: meta,
+            transactions: [included, outside, deleted],
+            today: asOf
+        )
+
+        #expect(result.map(\.id) == [included.id])
+    }
 }

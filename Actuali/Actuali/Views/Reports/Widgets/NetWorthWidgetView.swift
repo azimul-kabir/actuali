@@ -5,6 +5,8 @@ struct NetWorthWidgetView: View {
     @EnvironmentObject private var budgetStore: BudgetStore
     let displayName: String
     let data: NetWorthData
+    let explanation: String
+    let onOpenTransactions: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -48,6 +50,14 @@ struct NetWorthWidgetView: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 80, alignment: .center)
             }
+            Button(action: onOpenTransactions) {
+                Label("Why this changed", systemImage: "arrow.up.right.circle")
+                    .font(.subheadline)
+            }
+            Text(explanation)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
         }
         .padding()
         .background(Color(.secondarySystemBackground))
