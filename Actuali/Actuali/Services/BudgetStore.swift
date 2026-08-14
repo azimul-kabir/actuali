@@ -12,6 +12,7 @@ enum BudgetStoreError: LocalizedError, Equatable {
     case transferAmountNotPositive
     case transferPayeeMissing
     case transferCategoriesMatch
+    case transferAmountExceedsSource
     case invalidAmount
     case missingTransferDestination
     case payeeCreationFailed(String)
@@ -35,6 +36,8 @@ enum BudgetStoreError: LocalizedError, Equatable {
             return "Transfer payee not found for selected accounts"
         case .transferCategoriesMatch:
             return "Money must move between two different categories"
+        case .transferAmountExceedsSource:
+            return "That source does not have enough available money"
         case .invalidAmount:
             return "Invalid amount"
         case .missingTransferDestination:
