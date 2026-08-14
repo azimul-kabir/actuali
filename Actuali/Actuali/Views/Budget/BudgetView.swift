@@ -1042,8 +1042,8 @@ struct CategoryBudgetDetailSheet: View {
     @State private var quickAssignSuggestions: [QuickAssignSuggestion] = []
     @State private var isApplyingSuggestion = false
     @State private var quickAssignError: String?
-    @State private var actionsExpanded = true
-    @State private var quickAssignExpanded = true
+    @AppStorage("budgetDetailActionsExpanded") private var actionsExpanded = true
+    @AppStorage("budgetDetailQuickAssignExpanded") private var quickAssignExpanded = true
 
     private var isTracking: Bool {
         budgetStore.currentBudgetMonth?.isTrackingBudget == true
