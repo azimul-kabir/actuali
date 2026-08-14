@@ -51,28 +51,36 @@ struct TransactionsListView: View {
                 }
             } else if let pager {
                 List {
-                    ForEach(pager.transactions) { transaction in
-                        Button {
-                            editingTransaction = transaction
-                        } label: {
-                            TransactionRow(transaction: transaction, onToggleCleared: {
-                                Task { await budgetStore.toggleCleared(transaction) }
-                            })
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                            Button(role: .destructive) {
-                                Task { await budgetStore.deleteTransaction(transaction) }
-                            } label: {
-                                Label("Delete", systemImage: "trash")
+                    ForEach(TransactionDateGroup.grouped(pager.transactions)) { group in
+                        Section(group.title) {
+                            ForEach(group.transactions) { transaction in
+                                Button {
+                                    editingTransaction = transaction
+                                } label: {
+                                    TransactionRow(
+                                        transaction: transaction,
+                                        showDate: false,
+                                        onToggleCleared: {
+                                            Task { await budgetStore.toggleCleared(transaction) }
+                                        }
+                                    )
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    Button(role: .destructive) {
+                                        Task { await budgetStore.deleteTransaction(transaction) }
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+                                    Button {
+                                        editingTransaction = transaction
+                                    } label: {
+                                        Label("Edit", systemImage: "pencil")
+                                    }
+                                    .tint(.yellow)
+                                }
                             }
-                            Button {
-                                editingTransaction = transaction
-                            } label: {
-                                Label("Edit", systemImage: "pencil")
-                            }
-                            .tint(.yellow)
                         }
                     }
                     if pager.hasMore {
@@ -134,10 +142,35 @@ struct TransactionsListView: View {
     }
 }
 
+/// Consecutive date buckets preserve the database's newest-first order and
+/// naturally merge a newly loaded page with its preceding day.
+struct TransactionDateGroup: Identifiable, Equatable {
+    let id: Int
+    var transactions: [Transaction]
+
+    var title: String {
+        let date = Transaction.date(fromYYYYMMDD: id)
+        if Calendar.current.isDateInToday(date) { return "Today" }
+        if Calendar.current.isDateInYesterday(date) { return "Yesterday" }
+        return date.formatted(.dateTime.weekday(.wide).month(.abbreviated).day())
+    }
+
+    static func grouped(_ transactions: [Transaction]) -> [TransactionDateGroup] {
+        transactions.reduce(into: []) { groups, transaction in
+            if groups.last?.id == transaction.date {
+                groups[groups.count - 1].transactions.append(transaction)
+            } else {
+                groups.append(TransactionDateGroup(id: transaction.date, transactions: [transaction]))
+            }
+        }
+    }
+}
+
 struct TransactionRow: View {
     @EnvironmentObject var budgetStore: BudgetStore
     let transaction: Transaction
     var showAccount: Bool = true
+    var showDate: Bool = true
     /// Tap action for the cleared-status dot. Nil leaves the dot inert
     /// (split-child rows, contexts without a reload path). Reconciled rows
     /// confirm before invoking, since the store unlocks them instead.
@@ -249,9 +282,11 @@ struct TransactionRow: View {
             VStack(alignment: .trailing, spacing: 2) {
                 Text(budgetStore.displayBalance(transaction.amount))
                     .foregroundColor(transaction.isOutflow ? .primary : .green)
-                Text(transaction.dateFormatted)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                if showDate {
+                    Text(transaction.dateFormatted)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
         }
         .padding(.vertical, 2)
