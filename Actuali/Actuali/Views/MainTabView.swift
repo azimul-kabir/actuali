@@ -47,12 +47,12 @@ struct MainTabView: View {
             }
         }
         .onChange(of: notificationRouter.pendingAllAccountsNavigation) { _, pending in
-            if pending { selectedTab = 0 }
+            if pending { selectedTab = 1 }
         }
-        // A save in the tab-hosted add flow routes to the account's
+        // A save from an add-transaction sheet routes to the account's
         // transaction list, which lives on the Accounts tab.
         .onChange(of: notificationRouter.pendingAccountNavigation) { _, accountId in
-            if accountId != nil { selectedTab = 0 }
+            if accountId != nil { selectedTab = 1 }
         }
     }
 
@@ -62,12 +62,18 @@ struct MainTabView: View {
     private var tabs: some View {
         TabView(selection: $selectedTab) {
             Tab(value: 0) {
+                HomeView()
+            } label: {
+                Label("Home", systemImage: "house.fill")
+            }
+
+            Tab(value: 1) {
                 AccountsListView()
             } label: {
                 Label("Accounts", systemImage: "banknote")
             }
 
-            Tab(value: 1) {
+            Tab(value: 2) {
                 BudgetView()
             } label: {
                 Label("Budget", systemImage: "wallet.bifold")
@@ -78,12 +84,6 @@ struct MainTabView: View {
             // surfaces the value to XCUITest on iOS 26 — BudgetTabBadgeUITests
             // fails on main for that reason, unrelated to this.)
             .accessibilityValue(Text(overspentBadgeValue))
-
-            Tab(value: 2) {
-                AddTransactionTabView()
-            } label: {
-                Label("Add", systemImage: "plus.circle.fill")
-            }
 
             Tab(value: 3) {
                 ReportsTabView()
@@ -96,40 +96,6 @@ struct MainTabView: View {
             } label: {
                 Label("Settings", systemImage: "gear")
             }
-        }
-    }
-}
-
-struct AddTransactionTabView: View {
-    @EnvironmentObject private var budgetStore: BudgetStore
-    @State private var showingDefaultAccountAlert = false
-
-    var body: some View {
-        let configuredId = budgetStore.defaultAccountId
-        let validDefaultAccount = configuredId.flatMap { id in
-            budgetStore.accounts.first { $0.id == id && !$0.closed }
-        }
-        let fallbackAccount = budgetStore.accounts.first { !$0.closed }
-
-        if let account = validDefaultAccount ?? fallbackAccount {
-            AddTransactionView(accountId: account.id)
-                .onAppear {
-                    if configuredId != nil && validDefaultAccount == nil {
-                        budgetStore.defaultAccountId = nil
-                        showingDefaultAccountAlert = true
-                    }
-                }
-                .alert("Default Account Unavailable", isPresented: $showingDefaultAccountAlert) {
-                    Button("OK") {}
-                } message: {
-                    Text("Your default account is no longer available. Please configure a new default in Settings.")
-                }
-        } else {
-            ContentUnavailableView(
-                "No Accounts",
-                systemImage: "banknote",
-                description: Text("Add an account to create transactions")
-            )
         }
     }
 }
