@@ -295,15 +295,6 @@ struct TransactionRow: View {
                     Text(categoryLabel)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    if showDate, runningBalance != nil {
-                        Text("·")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text(transaction.dateFormatted)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
                     if let notes = transaction.notes, !notes.isEmpty {
                         Text("・")
                             .font(.caption)
@@ -325,12 +316,9 @@ struct TransactionRow: View {
                 Text(budgetStore.displayBalance(transaction.amount))
                     .foregroundColor(transaction.isOutflow ? .primary : .green)
                 if showDate {
-                    Text(runningBalance.map {
-                        "Balance \(budgetStore.displayBalance($0))"
-                    } ?? transaction.dateFormatted)
+                    Text(transaction.dateFormatted)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
                 } else if let runningBalance {
                     Text("Balance \(budgetStore.displayBalance(runningBalance))")
                         .font(.caption)
