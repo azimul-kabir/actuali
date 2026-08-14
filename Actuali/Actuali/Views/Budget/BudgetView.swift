@@ -1181,11 +1181,15 @@ struct CategoryBudgetDetailSheet: View {
                                 } label: {
                                     HStack {
                                         Text(quickAssignTitle(for: suggestion.kind))
-                                        Spacer()
+                                            .foregroundStyle(.tint)
+                                        Spacer(minLength: 12)
                                         Text(budgetStore.displayBalance(suggestion.amount))
-                                            .foregroundStyle(.secondary)
+                                            .foregroundStyle(.primary)
+                                            .monospacedDigit()
+                                            .fixedSize(horizontal: true, vertical: false)
                                     }
                                 }
+                                .buttonStyle(.plain)
                                 .disabled(isApplyingSuggestion)
                             }
                         }
