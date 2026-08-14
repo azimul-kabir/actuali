@@ -89,4 +89,28 @@ final class BudgetDisplayStyleUITests: XCTestCase {
         XCTAssertTrue(app.buttons["All Transactions"].exists)
         XCTAssertTrue(app.staticTexts["Quick Assign"].exists)
     }
+
+    @MainActor
+    func testFocusedViewsAndCategorySearchFilterBudgetRows() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["-loadDemoData", "-budgetFocusedView", "all"]
+        app.launch()
+
+        app.tabBars.buttons["Budget"].tap()
+        let groceries = app.buttons["Details for Groceries"].firstMatch
+        XCTAssertTrue(groceries.waitForExistence(timeout: 10))
+
+        app.buttons["Overspent budget view"].tap()
+        XCTAssertTrue(app.staticTexts["No Matching Categories"].waitForExistence(timeout: 5))
+
+        app.buttons["All budget view"].tap()
+        XCTAssertTrue(groceries.waitForExistence(timeout: 5))
+
+        let searchField = app.searchFields["Search categories"]
+        XCTAssertTrue(searchField.waitForExistence(timeout: 5))
+        searchField.tap()
+        searchField.typeText("Groceries")
+        XCTAssertTrue(groceries.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.buttons["Details for Rent"].exists)
+    }
 }

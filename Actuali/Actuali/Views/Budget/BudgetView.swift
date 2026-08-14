@@ -46,12 +46,19 @@ struct BudgetView: View {
     @State private var selectedCategory: CategoryBudget?
     @State private var transferContext: BudgetTransferContext?
     @State private var transactionsDestination: CategoryTransactionsDestination?
+    @State private var categorySearch = ""
+    @AppStorage("budgetFocusedView") private var focusedViewStorage = BudgetFocusedView.all.rawValue
     /// Comma-joined group ids the user has collapsed, PWA-style. Stored as a
     /// string because @AppStorage can't hold a Set directly.
     @AppStorage("collapsedBudgetGroups") private var collapsedGroupsStorage = ""
 
     private var collapsedGroups: Set<String> {
         Set(collapsedGroupsStorage.split(separator: ",").map(String.init))
+    }
+
+    private var focusedView: BudgetFocusedView {
+        get { BudgetFocusedView(rawValue: focusedViewStorage) ?? .all }
+        nonmutating set { focusedViewStorage = newValue.rawValue }
     }
 
     private func toggleCollapsed(_ groupId: String) {
@@ -119,8 +126,25 @@ struct BudgetView: View {
                         // the capsule's bottom corners (GH #165).
                         .padding(.bottom, 8)
 
+                        BudgetFocusedViewPicker(selection: Binding(
+                            get: { focusedView },
+                            set: { focusedView = $0 }
+                        ))
+
                         List {
                             BudgetCheckInSection(budget: budget)
+
+                            if groupedCategories.isEmpty {
+                                Section {
+                                    ContentUnavailableView(
+                                        categorySearch.isEmpty ? "No Matching Categories" : "No Search Results",
+                                        systemImage: "line.3.horizontal.decrease.circle",
+                                        description: Text(emptyStateDescription)
+                                    )
+                                    .frame(maxWidth: .infinity)
+                                    .listRowBackground(Color.clear)
+                                }
+                            }
 
                             ForEach(groupedCategories, id: \.id) { group in
                                 let isCollapsed = collapsedGroups.contains(group.id)
@@ -263,6 +287,7 @@ struct BudgetView: View {
                 }
             }
             .navigationTitle("Budget")
+            .searchable(text: $categorySearch, prompt: "Search categories")
             .toolbar {
                 // Both arrows flank the month in the center, so nothing sits in
                 // the leading "back button" position where the previous-month
@@ -354,13 +379,20 @@ struct BudgetView: View {
         let name: String
         /// The rows to draw, after "Hide Spent Categories" filtering.
         let categories: [CategoryBudget]
-        /// Totals over the group's whole category list, hidden rows included.
+        /// Totals over the rows represented by this focused group.
         let totals: CategoryGroupTotals
     }
 
     var groupedCategories: [CategoryGroupSection] {
         guard let budget = budgetStore.currentBudgetMonth else { return [] }
-        let byGroup = Dictionary(grouping: budget.categoryBudgets, by: { $0.groupId })
+        let query = categorySearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        let filteredCategories = budget.categoryBudgets.filter { category in
+            focusedView.includes(category)
+                && (query.isEmpty
+                    || category.categoryName.localizedCaseInsensitiveContains(query)
+                    || category.groupName.localizedCaseInsensitiveContains(query))
+        }
+        let byGroup = Dictionary(grouping: filteredCategories, by: { $0.groupId })
         return byGroup
             .compactMap { groupId, items -> (Double, CategoryGroupSection)? in
                 guard let first = items.first else { return nil }
@@ -383,6 +415,13 @@ struct BudgetView: View {
             .map(\.1)
     }
 
+    private var emptyStateDescription: String {
+        if !categorySearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return "Try another category or group name."
+        }
+        return "No categories match the \(focusedView.title) view this month."
+    }
+
     static func currentMonthString() -> String {
         yearMonthFormatter.string(from: Date())
     }
@@ -402,6 +441,38 @@ struct BudgetView: View {
             return month
         }
         return yearMonthFormatter.string(from: shifted)
+    }
+}
+
+struct BudgetFocusedViewPicker: View {
+    @Binding var selection: BudgetFocusedView
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(BudgetFocusedView.allCases) { view in
+                    Button {
+                        selection = view
+                    } label: {
+                        Text(view.title)
+                            .font(.subheadline.weight(selection == view ? .semibold : .regular))
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(
+                                Capsule()
+                                    .fill(selection == view ? Color.accentColor : Color(.secondarySystemGroupedBackground))
+                            )
+                            .foregroundStyle(selection == view ? Color.white : Color.primary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(view.title) budget view")
+                    .accessibilityAddTraits(selection == view ? .isSelected : [])
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.bottom, 8)
+        }
+        .background(Color(.systemGroupedBackground))
     }
 }
 
