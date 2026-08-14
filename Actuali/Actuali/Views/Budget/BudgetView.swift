@@ -46,19 +46,12 @@ struct BudgetView: View {
     @State private var selectedCategory: CategoryBudget?
     @State private var transferContext: BudgetTransferContext?
     @State private var transactionsDestination: CategoryTransactionsDestination?
-    @State private var categorySearch = ""
-    @AppStorage("budgetFocusedView") private var focusedViewStorage = BudgetFocusedView.all.rawValue
     /// Comma-joined group ids the user has collapsed, PWA-style. Stored as a
     /// string because @AppStorage can't hold a Set directly.
     @AppStorage("collapsedBudgetGroups") private var collapsedGroupsStorage = ""
 
     private var collapsedGroups: Set<String> {
         Set(collapsedGroupsStorage.split(separator: ",").map(String.init))
-    }
-
-    private var focusedView: BudgetFocusedView {
-        get { BudgetFocusedView(rawValue: focusedViewStorage) ?? .all }
-        nonmutating set { focusedViewStorage = newValue.rawValue }
     }
 
     private func toggleCollapsed(_ groupId: String) {
@@ -126,20 +119,15 @@ struct BudgetView: View {
                         // the capsule's bottom corners (GH #165).
                         .padding(.bottom, 8)
 
-                        BudgetFocusedViewPicker(selection: Binding(
-                            get: { focusedView },
-                            set: { focusedView = $0 }
-                        ))
-
                         List {
                             BudgetCheckInSection(budget: budget)
 
                             if groupedCategories.isEmpty {
                                 Section {
                                     ContentUnavailableView(
-                                        categorySearch.isEmpty ? "No Matching Categories" : "No Search Results",
-                                        systemImage: "line.3.horizontal.decrease.circle",
-                                        description: Text(emptyStateDescription)
+                                        "No Categories",
+                                        systemImage: "folder",
+                                        description: Text("This budget has no visible expense categories.")
                                     )
                                     .frame(maxWidth: .infinity)
                                     .listRowBackground(Color.clear)
@@ -287,7 +275,6 @@ struct BudgetView: View {
                 }
             }
             .navigationTitle("Budget")
-            .searchable(text: $categorySearch, prompt: "Search categories")
             .toolbar {
                 // Both arrows flank the month in the center, so nothing sits in
                 // the leading "back button" position where the previous-month
@@ -385,14 +372,7 @@ struct BudgetView: View {
 
     var groupedCategories: [CategoryGroupSection] {
         guard let budget = budgetStore.currentBudgetMonth else { return [] }
-        let query = categorySearch.trimmingCharacters(in: .whitespacesAndNewlines)
-        let filteredCategories = budget.categoryBudgets.filter { category in
-            focusedView.includes(category)
-                && (query.isEmpty
-                    || category.categoryName.localizedCaseInsensitiveContains(query)
-                    || category.groupName.localizedCaseInsensitiveContains(query))
-        }
-        let byGroup = Dictionary(grouping: filteredCategories, by: { $0.groupId })
+        let byGroup = Dictionary(grouping: budget.categoryBudgets, by: { $0.groupId })
         return byGroup
             .compactMap { groupId, items -> (Double, CategoryGroupSection)? in
                 guard let first = items.first else { return nil }
@@ -413,13 +393,6 @@ struct BudgetView: View {
             }
             .sorted { $0.0 < $1.0 }
             .map(\.1)
-    }
-
-    private var emptyStateDescription: String {
-        if !categorySearch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return "Try another category or group name."
-        }
-        return "No categories match the \(focusedView.title) view this month."
     }
 
     static func currentMonthString() -> String {
@@ -444,41 +417,10 @@ struct BudgetView: View {
     }
 }
 
-struct BudgetFocusedViewPicker: View {
-    @Binding var selection: BudgetFocusedView
-
-    var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(BudgetFocusedView.allCases) { view in
-                    Button {
-                        selection = view
-                    } label: {
-                        Text(view.title)
-                            .font(.subheadline.weight(selection == view ? .semibold : .regular))
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
-                            .background(
-                                Capsule()
-                                    .fill(selection == view ? Color.accentColor : Color(.secondarySystemGroupedBackground))
-                            )
-                            .foregroundStyle(selection == view ? Color.white : Color.primary)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("\(view.title) budget view")
-                    .accessibilityAddTraits(selection == view ? .isSelected : [])
-                }
-            }
-            .padding(.horizontal, 8)
-            .padding(.bottom, 8)
-        }
-        .background(Color(.systemGroupedBackground))
-    }
-}
-
 struct BudgetCheckInSection: View {
     @EnvironmentObject var budgetStore: BudgetStore
     let budget: BudgetMonth
+    @AppStorage("budgetCheckInExpanded") private var isExpanded = true
 
     private var hasIssues: Bool {
         (budget.toBudget ?? 0) > 0
@@ -490,7 +432,24 @@ struct BudgetCheckInSection: View {
 
     var body: some View {
         Section {
-            if let toBudget = budget.toBudget, toBudget > 0 {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    isExpanded.toggle()
+                }
+            } label: {
+                HStack {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.caption)
+                    Text("Budget Check-In")
+                        .font(.headline)
+                    Spacer()
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Budget Check-In, \(isExpanded ? "expanded" : "collapsed")")
+
+            if isExpanded, let toBudget = budget.toBudget, toBudget > 0 {
                 NavigationLink {
                     BudgetGuidanceCategoryList(
                         title: "Ready to Assign",
@@ -510,7 +469,7 @@ struct BudgetCheckInSection: View {
                 }
             }
 
-            if budgetStore.showOverspentBadge, budget.overspentCount > 0 {
+            if isExpanded, budgetStore.showOverspentBadge, budget.overspentCount > 0 {
                 NavigationLink {
                     OverspentCategoriesView()
                 } label: {
@@ -524,7 +483,7 @@ struct BudgetCheckInSection: View {
                 }
             }
 
-            if budgetStore.uncategorizedCount > 0 {
+            if isExpanded, budgetStore.uncategorizedCount > 0 {
                 NavigationLink {
                     UncategorizedTransactionsView()
                 } label: {
@@ -536,7 +495,7 @@ struct BudgetCheckInSection: View {
                 }
             }
 
-            if !budget.unassignedCategories.isEmpty {
+            if isExpanded, !budget.unassignedCategories.isEmpty {
                 NavigationLink {
                     BudgetGuidanceCategoryList(
                         title: budget.isTrackingBudget ? "No Budget Set" : "Not Funded",
@@ -555,7 +514,7 @@ struct BudgetCheckInSection: View {
                 }
             }
 
-            if !budget.approachingLimitCategories.isEmpty {
+            if isExpanded, !budget.approachingLimitCategories.isEmpty {
                 NavigationLink {
                     BudgetGuidanceCategoryList(
                         title: budget.isTrackingBudget ? "Near Budget" : "Almost Spent",
@@ -571,16 +530,16 @@ struct BudgetCheckInSection: View {
                 }
             }
 
-            if !hasIssues {
+            if isExpanded, !hasIssues {
                 Label("Budget looks good", systemImage: "checkmark.circle.fill")
                     .foregroundStyle(.green)
             }
-        } header: {
-            Text("Budget Check-In")
         } footer: {
-            Text(budget.isTrackingBudget
-                ? "Review the plan against this month's actual activity."
-                : "Resolve the important items before assigning the rest of the month.")
+            if isExpanded {
+                Text(budget.isTrackingBudget
+                    ? "Review the plan against this month's actual activity."
+                    : "Resolve the important items before assigning the rest of the month.")
+            }
         }
     }
 }

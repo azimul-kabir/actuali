@@ -161,44 +161,6 @@ enum CategoryProgressState: Equatable {
     case overspent
 }
 
-/// Local-only lenses over a month's expense envelopes. These deliberately
-/// use values Actual already syncs instead of introducing YNAB-style target
-/// state that the Actual data model cannot round-trip.
-enum BudgetFocusedView: String, CaseIterable, Identifiable {
-    case all
-    case notFunded
-    case overspent
-    case available
-    case activity
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .all: "All"
-        case .notFunded: "Not Funded"
-        case .overspent: "Overspent"
-        case .available: "Available"
-        case .activity: "Activity"
-        }
-    }
-
-    func includes(_ category: CategoryBudget) -> Bool {
-        switch self {
-        case .all:
-            true
-        case .notFunded:
-            category.progressState == .unassigned
-        case .overspent:
-            category.isOverspent
-        case .available:
-            category.available > 0
-        case .activity:
-            category.spent != 0
-        }
-    }
-}
-
 struct QuickAssignSuggestion: Identifiable, Equatable {
     enum Kind: String {
         case spentLastMonth

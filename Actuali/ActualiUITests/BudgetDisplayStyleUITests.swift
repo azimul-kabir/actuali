@@ -91,34 +91,34 @@ final class BudgetDisplayStyleUITests: XCTestCase {
     }
 
     @MainActor
-    func testFocusedViewsAndCategorySearchFilterBudgetRows() throws {
+    func testBudgetHasNoCategoryFiltersAndCheckInCollapses() throws {
         let app = XCUIApplication()
-        app.launchArguments = ["-loadDemoData", "-budgetFocusedView", "all"]
+        app.launchArguments = ["-loadDemoData"]
         app.launch()
 
         app.tabBars.buttons["Budget"].tap()
         let groceries = app.buttons["Details for Groceries"].firstMatch
         XCTAssertTrue(groceries.waitForExistence(timeout: 10))
+        XCTAssertFalse(app.searchFields["Search categories"].exists)
+        XCTAssertFalse(app.buttons["Overspent budget view"].exists)
 
-        app.buttons["Overspent budget view"].tap()
-        XCTAssertTrue(app.staticTexts["No Matching Categories"].waitForExistence(timeout: 5))
-
-        app.buttons["All budget view"].tap()
-        XCTAssertTrue(groceries.waitForExistence(timeout: 5))
-
-        let searchField = app.searchFields["Search categories"]
-        XCTAssertTrue(searchField.waitForExistence(timeout: 5))
-        searchField.tap()
-        searchField.typeText("Groceries")
-        XCTAssertTrue(groceries.waitForExistence(timeout: 5))
-        XCTAssertFalse(app.buttons["Details for Rent"].exists)
+        let expanded = app.buttons["Budget Check-In, expanded"]
+        let collapsed = app.buttons["Budget Check-In, collapsed"]
+        if collapsed.waitForExistence(timeout: 2) {
+            collapsed.tap()
+        }
+        XCTAssertTrue(expanded.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Resolve the important items before assigning the rest of the month."].exists)
+        expanded.tap()
+        XCTAssertTrue(collapsed.waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["Resolve the important items before assigning the rest of the month."].exists)
     }
 
     @MainActor
     func testCategoryActionsAndQuickAssignCanCollapse() throws {
         let app = XCUIApplication()
         app.launchArguments = [
-            "-loadDemoData", "-budgetDisplayStyle", "clean", "-initialTab", "1",
+            "-loadDemoData", "-budgetDisplayStyle", "clean", "-initialTab", "2",
         ]
         app.launch()
 
