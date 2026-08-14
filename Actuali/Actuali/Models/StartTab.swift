@@ -1,10 +1,10 @@
 import Foundation
 
-/// Tab the app opens on at launch. Persisted to UserDefaults, defaults to Accounts.
+/// Tab the app opens on at launch. Persisted to UserDefaults, defaults to Home.
 enum StartTab: String, CaseIterable, Identifiable {
+    case home
     case accounts
     case budget
-    case addTransaction
     case reports
 
     var id: String { rawValue }
@@ -12,18 +12,18 @@ enum StartTab: String, CaseIterable, Identifiable {
     /// Tag of the matching tab in MainTabView.
     var tabTag: Int {
         switch self {
-        case .accounts: return 0
-        case .budget: return 1
-        case .addTransaction: return 2
+        case .home: return 0
+        case .accounts: return 1
+        case .budget: return 2
         case .reports: return 3
         }
     }
 
     var label: String {
         switch self {
+        case .home: return "Home"
         case .accounts: return "Accounts"
         case .budget: return "Budget"
-        case .addTransaction: return "Add Transaction"
         case .reports: return "Reports"
         }
     }
@@ -31,7 +31,11 @@ enum StartTab: String, CaseIterable, Identifiable {
     static let defaultsKey = "startTab"
 
     static func resolved(from raw: String?) -> StartTab {
-        raw.flatMap(StartTab.init(rawValue:)) ?? .accounts
+        guard let raw else { return .home }
+        // Older builds offered Add Transaction as a start tab. The add flow is
+        // now an action from Home, so migrate that persisted value to Home.
+        if raw == "addTransaction" { return .home }
+        return StartTab(rawValue: raw) ?? .home
     }
 
     static var persisted: StartTab {
