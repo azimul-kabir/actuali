@@ -316,7 +316,9 @@ struct TransactionRow: View {
                 Text(budgetStore.displayBalance(transaction.amount))
                     .foregroundColor(transaction.isOutflow ? .primary : .green)
                 if showDate {
-                    Text(transaction.dateFormatted)
+                    Text(runningBalance.map {
+                        "\(transaction.dateFormatted) · Balance \(budgetStore.displayBalance($0))"
+                    } ?? transaction.dateFormatted)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 } else if let runningBalance {

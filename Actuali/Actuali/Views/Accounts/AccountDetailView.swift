@@ -31,8 +31,7 @@ struct AccountDetailView: View {
     }
 
     private var runningBalances: [String: Int] {
-        guard budgetStore.transactionDisplayMode == .groupedByDate,
-              searchQuery == nil,
+        guard searchQuery == nil,
               !budgetStore.hideClearedTransactions,
               let pager else { return [:] }
         return TransactionRunningBalance.values(
@@ -189,6 +188,7 @@ struct AccountDetailView: View {
                         ForEach(pager.transactions) { transaction in
                             TransactionListRow(transaction: transaction,
                                                showAccount: false,
+                                               runningBalance: runningBalances[transaction.id],
                                                editing: $editingTransaction)
                         }
                         if pager.hasMore {
