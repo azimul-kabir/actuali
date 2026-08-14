@@ -155,10 +155,10 @@ struct HomeView: View {
                 .accessibilityHint("Opens the Budget tab to assign money")
             } else {
                 VStack(alignment: .leading, spacing: 6) {
-                    Label("Planned result", systemImage: "chart.line.uptrend.xyaxis")
+                    Label("Projected", systemImage: "chart.line.uptrend.xyaxis")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
-                    Text(formatted(month.plannedResult))
+                    Text(formatted(month.projectedSavings))
                         .font(.title2.weight(.bold))
                         .monospacedDigit()
                         .lineLimit(1)

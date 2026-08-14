@@ -590,6 +590,24 @@ struct CleanCategoryBudgetRow: View {
     }
 }
 
+/// Whether `month` ("YYYY-MM") is before the current calendar month. The
+/// strings are zero-padded, so a plain lexicographic compare is exact.
+private func isPastMonth(_ month: String) -> Bool {
+    month < BudgetView.currentMonthString()
+}
+
+/// The tracking-budget result figure for the summary bar: actual savings once
+/// a month is finished, projected savings while it's still current or ahead.
+/// Mirrors the Actual webapp, which flips "Projected savings" to "Saved" when
+/// the month rolls over.
+private func trackingSavings(_ budget: BudgetMonth) -> Int {
+    isPastMonth(budget.month) ? budget.savedActual : budget.projectedSavings
+}
+
+private func trackingSavingsLabel(_ budget: BudgetMonth) -> String {
+    isPastMonth(budget.month) ? "Saved" : "Projected"
+}
+
 /// Clean-style summary card: a 2x2 grid whose reading order follows the
 /// money — came in, allocated, went out, left over. Two rows because four
 /// currency amounts don't fit across narrow devices.
@@ -599,58 +617,42 @@ struct CleanBudgetSummary: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            if budget.isTrackingBudget {
-                HStack(alignment: .top) {
+            HStack(alignment: .top) {
+                SummaryStat(
+                    label: "Income",
+                    value: budgetStore.displayBalance(budget.totalIncome)
+                )
+                Spacer()
+                SummaryStat(
+                    label: "Budgeted",
+                    value: budgetStore.displayBalance(budget.totalBudgeted),
+                    alignment: .trailing
+                )
+            }
+            HStack(alignment: .top) {
+                SummaryStat(
+                    label: "Spent",
+                    value: budgetStore.displayBalance(-budget.totalSpent)
+                )
+                Spacer()
+                // Envelope budgets lead with unallocated funds; tracking
+                // budgets report savings instead — actual for a finished month,
+                // projected for the current/future month.
+                if let toBudget = budget.toBudget {
                     SummaryStat(
-                        label: "Planned income",
-                        value: budgetStore.displayBalance(budget.totalBudgetedIncome)
-                    )
-                    Spacer()
-                    SummaryStat(
-                        label: "Planned expenses",
-                        value: budgetStore.displayBalance(budget.totalBudgeted),
+                        label: "To Budget",
+                        value: budgetStore.displayBalance(toBudget),
+                        valueColor: toBudget >= 0 ? .green : .red,
                         alignment: .trailing
                     )
-                }
-                HStack(alignment: .top) {
+                } else {
+                    let value = trackingSavings(budget)
                     SummaryStat(
-                        label: "Actual income",
-                        value: budgetStore.displayBalance(budget.totalIncome)
-                    )
-                    Spacer()
-                    SummaryStat(
-                        label: "Actual expenses",
-                        value: budgetStore.displayBalance(-budget.totalSpent),
+                        label: trackingSavingsLabel(budget),
+                        value: budgetStore.displayBalance(value),
+                        valueColor: value >= 0 ? .green : .red,
                         alignment: .trailing
                     )
-                }
-            } else {
-                HStack(alignment: .top) {
-                    SummaryStat(
-                        label: "Income",
-                        value: budgetStore.displayBalance(budget.totalIncome)
-                    )
-                    Spacer()
-                    SummaryStat(
-                        label: "Budgeted",
-                        value: budgetStore.displayBalance(budget.totalBudgeted),
-                        alignment: .trailing
-                    )
-                }
-                HStack(alignment: .top) {
-                    SummaryStat(
-                        label: "Spent",
-                        value: budgetStore.displayBalance(-budget.totalSpent)
-                    )
-                    Spacer()
-                    if let toBudget = budget.toBudget {
-                        SummaryStat(
-                            label: "To Budget",
-                            value: budgetStore.displayBalance(toBudget),
-                            valueColor: toBudget >= 0 ? .green : .red,
-                            alignment: .trailing
-                        )
-                    }
                 }
             }
         }
@@ -690,11 +692,23 @@ struct TableBudgetSummary: View {
                 label: "Spent",
                 value: budgetStore.displayBudgetCell(budget.totalSpent)
             )
-            SummaryColumn(
-                label: "Balance",
-                value: budgetStore.displayBudgetCell(budget.totalAvailable),
-                valueColor: budget.totalAvailable >= 0 ? .green : .red
-            )
+            // Envelope budgets total the category balances; tracking budgets
+            // report savings instead — actual for a finished month, projected
+            // for the current/future month.
+            if budget.toBudget != nil {
+                SummaryColumn(
+                    label: "Balance",
+                    value: budgetStore.displayBudgetCell(budget.totalAvailable),
+                    valueColor: budget.totalAvailable >= 0 ? .green : .red
+                )
+            } else {
+                let value = trackingSavings(budget)
+                SummaryColumn(
+                    label: trackingSavingsLabel(budget),
+                    value: budgetStore.displayBudgetCell(value),
+                    valueColor: value >= 0 ? .green : .red
+                )
+            }
         }
     }
 }

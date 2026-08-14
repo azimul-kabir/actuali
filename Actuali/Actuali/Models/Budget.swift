@@ -52,11 +52,23 @@ struct BudgetMonth: Identifiable, Hashable {
         incomeCategories.reduce(0) { $0 + $1.received }
     }
 
+    /// Sum of budgeted amounts on income categories. Only meaningful for
+    /// tracking budgets, which can budget income. Mirrors loot-core
+    /// tracking.ts `total-budget-income`.
     var totalBudgetedIncome: Int {
         incomeCategories.reduce(0) { $0 + $1.budgeted }
     }
 
-    var plannedResult: Int {
+    /// Actual money kept this month: income received minus what actually went
+    /// out. Mirrors loot-core tracking.ts `real-saved`
+    /// (`total-income - -total-spent`); `totalSpent` is negative, so this adds.
+    var savedActual: Int {
+        totalIncome + totalSpent
+    }
+
+    /// What the budget projects will be kept: budgeted income minus budgeted
+    /// expenses. Mirrors loot-core tracking.ts `total-saved`.
+    var projectedSavings: Int {
         totalBudgetedIncome - totalBudgeted
     }
 }

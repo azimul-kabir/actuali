@@ -105,6 +105,6 @@ struct BudgetMonthOverspentCountTests {
         ]
 
         #expect(month.totalBudgetedIncome == 75_000)
-        #expect(month.plannedResult == 25_000)
+        #expect(month.projectedSavings == 25_000)
     }
 }
