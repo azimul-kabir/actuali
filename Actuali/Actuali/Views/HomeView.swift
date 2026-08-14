@@ -149,7 +149,7 @@ struct HomeView: View {
 
                 metric(
                     title: "Spent",
-                    value: formatted(abs(month.totalSpent)),
+                    value: formatted(month.totalSpent),
                     systemImage: "arrow.down.circle"
                 )
             }
@@ -219,7 +219,7 @@ struct HomeView: View {
             } else {
                 ForEach(recentTransactions) { transaction in
                     HStack(spacing: 12) {
-                        Image(systemName: transaction.amount < 0 ? "arrow.up.right" : "arrow.down.left")
+                        Image(systemName: transactionDirectionIcon(for: transaction))
                             .frame(width: 28, height: 28)
                             .background(.thinMaterial, in: Circle())
 
@@ -263,8 +263,16 @@ struct HomeView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    private func transactionDirectionIcon(for transaction: Transaction) -> String {
+        if budgetStore.hideBalances {
+            return "arrow.left.arrow.right"
+        }
+        return transaction.amount < 0 ? "arrow.up.right" : "arrow.down.left"
+    }
+
     private func formatted(_ cents: Int) -> String {
-        CurrencyAmountFormat.string(
+        guard !budgetStore.hideBalances else { return "••••" }
+        return CurrencyAmountFormat.string(
             cents: cents,
             currencyCode: budgetStore.currencyCode,
             narrowSymbol: budgetStore.useNarrowCurrencySymbol
