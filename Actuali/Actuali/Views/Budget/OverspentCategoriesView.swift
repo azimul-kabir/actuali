@@ -8,6 +8,10 @@ struct OverspentCategoriesView: View {
     @EnvironmentObject var budgetStore: BudgetStore
     @State private var transferContext: BudgetTransferContext?
 
+    private var isTrackingBudget: Bool {
+        budgetStore.currentBudgetMonth?.isTrackingBudget == true
+    }
+
     var body: some View {
         Group {
             if let budget = budgetStore.currentBudgetMonth,
@@ -23,13 +27,18 @@ struct OverspentCategoriesView: View {
                                     Button {
                                         transferContext = BudgetTransferContext(category: category, budget: budget)
                                     } label: {
-                                        Label("Cover", systemImage: "arrow.left.arrow.right")
+                                        Label(
+                                            isTrackingBudget ? "Rebalance" : "Cover",
+                                            systemImage: "arrow.left.arrow.right"
+                                        )
                                     }
                                     .tint(.green)
                                 }
                         }
                     } footer: {
-                        Text("Categories with a negative balance in \(MonthPicker.title(for: budget.month)). Balances include overspending rolled over from earlier months, which this month's transactions alone won't explain. Swipe a category to cover its overspending.")
+                        Text(isTrackingBudget
+                             ? "Categories where actual expenses exceed the plan for \(MonthPicker.title(for: budget.month)). Swipe a category to rebalance the plan."
+                             : "Categories with a negative balance in \(MonthPicker.title(for: budget.month)). Balances include overspending rolled over from earlier months, which this month's transactions alone won't explain. Swipe a category to cover its overspending.")
                     }
                 }
                 .sheet(item: $transferContext) { context in
@@ -37,14 +46,16 @@ struct OverspentCategoriesView: View {
                 }
             } else {
                 ContentUnavailableView(
-                    "Nothing Overspent",
+                    isTrackingBudget ? "Nothing Over Budget" : "Nothing Overspent",
                     systemImage: "checkmark.circle",
-                    description: Text("No categories are overspent this month.")
+                    description: Text(isTrackingBudget
+                                      ? "No categories are over budget this month."
+                                      : "No categories are overspent this month.")
                 )
             }
         }
         .readableWidth()
-        .navigationTitle("Overspent Categories")
+        .navigationTitle(isTrackingBudget ? "Over Budget" : "Cover Overspending")
         .navigationBarTitleDisplayMode(.inline)
     }
 }

@@ -40,6 +40,9 @@ final class NotificationRouter: NSObject, ObservableObject, UNUserNotificationCe
     /// `AccountsListView` consumes the id by pushing the account.
     @Published var pendingAccountNavigation: String?
 
+    /// Cross-tab request from Home's Ready to Assign control.
+    @Published var pendingBudgetNavigation = false
+
     /// From a tapped new-transaction notification.
     @Published var destination: NotificationDestination?
 

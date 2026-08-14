@@ -2,6 +2,7 @@ import SwiftUI
 
 struct HomeView: View {
     @EnvironmentObject private var budgetStore: BudgetStore
+    @StateObject private var notificationRouter = NotificationRouter.shared
     @State private var showingAddTransaction = false
 
     private var openAccounts: [Account] {
@@ -59,22 +60,21 @@ struct HomeView: View {
                     recentTransactionsCard
                 }
                 .padding(.horizontal)
-                .padding(.bottom, 28)
+                .padding(.bottom, 96)
             }
             .navigationTitle("Home")
-            .safeAreaInset(edge: .bottom) {
+            .overlay(alignment: .bottomTrailing) {
                 Button {
                     showingAddTransaction = true
                 } label: {
                     Label("Add Transaction", systemImage: "plus.circle.fill")
                         .font(.headline)
-                        .frame(maxWidth: .infinity)
+                        .frame(width: 200)
                         .padding(.vertical, 13)
                 }
                 .buttonStyle(.borderedProminent)
-                .padding(.horizontal)
-                .padding(.top, 8)
-                .background(.ultraThinMaterial)
+                .padding(.bottom, 12)
+                .padding(.trailing, 16)
                 .disabled(defaultAccountId == nil)
             }
             .sheet(isPresented: $showingAddTransaction) {
@@ -129,11 +129,36 @@ struct HomeView: View {
             }
 
             if let toBudget = month.toBudget {
+                Button {
+                    notificationRouter.pendingBudgetNavigation = true
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Label("Ready to assign", systemImage: "tray.full")
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                            Text(formatted(toBudget))
+                                .font(.title2.weight(.bold))
+                                .foregroundStyle(.primary)
+                                .monospacedDigit()
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.75)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint("Opens the Budget tab to assign money")
+            } else {
                 VStack(alignment: .leading, spacing: 6) {
-                    Label("Ready to assign", systemImage: "tray.full")
+                    Label("Planned result", systemImage: "chart.line.uptrend.xyaxis")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
-                    Text(formatted(toBudget))
+                    Text(formatted(month.plannedResult))
                         .font(.title2.weight(.bold))
                         .monospacedDigit()
                         .lineLimit(1)
@@ -145,14 +170,22 @@ struct HomeView: View {
             Divider()
 
             HStack(spacing: 12) {
-                compactMetric(
-                    title: "Available",
-                    value: formatted(month.totalAvailable),
-                    systemImage: "checkmark.circle"
-                )
+                if month.isTrackingBudget {
+                    compactMetric(
+                        title: "Actual income",
+                        value: formatted(month.totalIncome),
+                        systemImage: "arrow.down.circle"
+                    )
+                } else {
+                    compactMetric(
+                        title: "Available",
+                        value: formatted(month.totalAvailable),
+                        systemImage: "checkmark.circle"
+                    )
+                }
 
                 compactMetric(
-                    title: "Spent",
+                    title: month.isTrackingBudget ? "Actual expenses" : "Spent",
                     value: formattedSpent(month.totalSpent),
                     systemImage: "arrow.down.circle"
                 )
@@ -163,38 +196,53 @@ struct HomeView: View {
     }
 
     private var needsAttentionCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Label("Needs attention", systemImage: "exclamationmark.triangle.fill")
-                    .font(.headline)
-                Spacer()
-                Text("\(overspentCategories.count)")
-                    .font(.subheadline.weight(.semibold))
-            }
-
-            ForEach(overspentCategories.prefix(3)) { category in
+        NavigationLink {
+            OverspentCategoriesView()
+        } label: {
+            VStack(alignment: .leading, spacing: 12) {
                 HStack {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(category.categoryName)
-                            .font(.subheadline.weight(.medium))
-                        Text(category.groupName)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                    Label(
+                        budgetStore.currentBudgetMonth?.isTrackingBudget == true
+                            ? "Review over budget"
+                            : "Cover overspending",
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
+                    .font(.headline)
                     Spacer()
-                    Text(formatted(category.available))
+                    Text("\(overspentCategories.count)")
                         .font(.subheadline.weight(.semibold))
+                    Image(systemName: "chevron.right")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                }
+
+                ForEach(overspentCategories.prefix(3)) { category in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(category.categoryName)
+                                .font(.subheadline.weight(.medium))
+                            Text(category.groupName)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Text(formatted(category.available))
+                            .font(.subheadline.weight(.semibold))
+                    }
+                }
+
+                if overspentCategories.count > 3 {
+                    Text("+ \(overspentCategories.count - 3) more")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
-
-            if overspentCategories.count > 3 {
-                Text("+ \(overspentCategories.count - 3) more")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            .foregroundStyle(.primary)
+            .padding()
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         }
-        .padding()
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .buttonStyle(.plain)
+        .accessibilityHint("Shows categories that need attention")
     }
 
     private var recentTransactionsCard: some View {

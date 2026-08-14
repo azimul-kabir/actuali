@@ -7,6 +7,16 @@ struct MainTabView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.isWideLayout) private var isWideLayout
 
+    init() {
+        let appearance = UITabBarAppearance()
+        appearance.configureWithTransparentBackground()
+        appearance.backgroundEffect = UIBlurEffect(style: .systemUltraThinMaterial)
+        appearance.backgroundColor = .clear
+        appearance.shadowColor = .clear
+        UITabBar.appearance().standardAppearance = appearance
+        UITabBar.appearance().scrollEdgeAppearance = appearance
+    }
+
     private static func initialTab() -> Int {
         #if DEBUG
         if let idx = CommandLine.arguments.firstIndex(of: "-initialTab"),
@@ -53,6 +63,11 @@ struct MainTabView: View {
         // transaction list, which lives on the Accounts tab.
         .onChange(of: notificationRouter.pendingAccountNavigation) { _, accountId in
             if accountId != nil { selectedTab = 1 }
+        }
+        .onChange(of: notificationRouter.pendingBudgetNavigation) { _, pending in
+            guard pending else { return }
+            selectedTab = 2
+            notificationRouter.pendingBudgetNavigation = false
         }
     }
 

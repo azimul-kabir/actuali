@@ -599,41 +599,58 @@ struct CleanBudgetSummary: View {
 
     var body: some View {
         VStack(spacing: 12) {
-            HStack(alignment: .top) {
-                SummaryStat(
-                    label: "Income",
-                    value: budgetStore.displayBalance(budget.totalIncome)
-                )
-                Spacer()
-                SummaryStat(
-                    label: "Budgeted",
-                    value: budgetStore.displayBalance(budget.totalBudgeted),
-                    alignment: .trailing
-                )
-            }
-            HStack(alignment: .top) {
-                SummaryStat(
-                    label: "Spent",
-                    value: budgetStore.displayBalance(-budget.totalSpent)
-                )
-                Spacer()
-                // Envelope budgets lead with unallocated funds; tracking
-                // budgets have no to-budget concept, so fall back to the
-                // total of category balances.
-                if let toBudget = budget.toBudget {
+            if budget.isTrackingBudget {
+                HStack(alignment: .top) {
                     SummaryStat(
-                        label: "To Budget",
-                        value: budgetStore.displayBalance(toBudget),
-                        valueColor: toBudget >= 0 ? .green : .red,
+                        label: "Planned income",
+                        value: budgetStore.displayBalance(budget.totalBudgetedIncome)
+                    )
+                    Spacer()
+                    SummaryStat(
+                        label: "Planned expenses",
+                        value: budgetStore.displayBalance(budget.totalBudgeted),
                         alignment: .trailing
                     )
-                } else {
+                }
+                HStack(alignment: .top) {
                     SummaryStat(
-                        label: "Available",
-                        value: budgetStore.displayBalance(budget.totalAvailable),
-                        valueColor: budget.totalAvailable >= 0 ? .green : .red,
+                        label: "Actual income",
+                        value: budgetStore.displayBalance(budget.totalIncome)
+                    )
+                    Spacer()
+                    SummaryStat(
+                        label: "Actual expenses",
+                        value: budgetStore.displayBalance(-budget.totalSpent),
                         alignment: .trailing
                     )
+                }
+            } else {
+                HStack(alignment: .top) {
+                    SummaryStat(
+                        label: "Income",
+                        value: budgetStore.displayBalance(budget.totalIncome)
+                    )
+                    Spacer()
+                    SummaryStat(
+                        label: "Budgeted",
+                        value: budgetStore.displayBalance(budget.totalBudgeted),
+                        alignment: .trailing
+                    )
+                }
+                HStack(alignment: .top) {
+                    SummaryStat(
+                        label: "Spent",
+                        value: budgetStore.displayBalance(-budget.totalSpent)
+                    )
+                    Spacer()
+                    if let toBudget = budget.toBudget {
+                        SummaryStat(
+                            label: "To Budget",
+                            value: budgetStore.displayBalance(toBudget),
+                            valueColor: toBudget >= 0 ? .green : .red,
+                            alignment: .trailing
+                        )
+                    }
                 }
             }
         }

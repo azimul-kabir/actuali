@@ -75,4 +75,36 @@ struct BudgetMonthOverspentCountTests {
         let category = makeCategory(id: "c", available: -500)
         #expect(category.rolledOverOverspending == 0)
     }
+
+    // MARK: - budget method summaries
+
+    @Test func nilToBudgetIdentifiesTrackingBudget() {
+        #expect(makeMonth(availables: []).isTrackingBudget)
+    }
+
+    @Test func toBudgetIdentifiesEnvelopeBudget() {
+        var month = makeMonth(availables: [])
+        month.toBudget = 0
+        #expect(!month.isTrackingBudget)
+    }
+
+    @Test func trackingPlannedResultUsesBudgetedIncomeAndExpenses() {
+        var month = makeMonth(availables: [4_000, 2_000])
+        month.categoryBudgets[0].budgeted = 30_000
+        month.categoryBudgets[1].budgeted = 20_000
+        month.incomeCategories = [
+            IncomeCategory(
+                month: "2026-07",
+                categoryId: "income",
+                categoryName: "Salary",
+                groupName: "Income",
+                sortOrder: 0,
+                budgeted: 75_000,
+                received: 70_000
+            )
+        ]
+
+        #expect(month.totalBudgetedIncome == 75_000)
+        #expect(month.plannedResult == 25_000)
+    }
 }
