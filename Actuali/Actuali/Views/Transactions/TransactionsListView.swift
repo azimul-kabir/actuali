@@ -171,6 +171,7 @@ struct TransactionRow: View {
     let transaction: Transaction
     var showAccount: Bool = true
     var showDate: Bool = true
+    var runningBalance: Int? = nil
     /// Tap action for the cleared-status dot. Nil leaves the dot inert
     /// (split-child rows, contexts without a reload path). Reconciled rows
     /// confirm before invoking, since the store unlocks them instead.
@@ -284,6 +285,10 @@ struct TransactionRow: View {
                     .foregroundColor(transaction.isOutflow ? .primary : .green)
                 if showDate {
                     Text(transaction.dateFormatted)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if let runningBalance {
+                    Text("Balance \(budgetStore.displayBalance(runningBalance))")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

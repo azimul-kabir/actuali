@@ -30,6 +30,14 @@ struct AccountDetailView: View {
         return trimmed.isEmpty ? nil : trimmed
     }
 
+    private var runningBalances: [String: Int] {
+        guard searchQuery == nil, let pager else { return [:] }
+        return TransactionRunningBalance.values(
+            currentBalance: currentBalance,
+            transactions: pager.transactions
+        )
+    }
+
     /// The pager is created on first use rather than in init because its
     /// fetch closure needs the environment store, which isn't available
     /// until body/task time. Rebuilt when the account changes: the closure
@@ -173,6 +181,7 @@ struct AccountDetailView: View {
                                     transaction: transaction,
                                     showAccount: false,
                                     showDate: false,
+                                    runningBalance: runningBalances[transaction.id],
                                     onToggleCleared: {
                                         Task { await budgetStore.toggleCleared(transaction) }
                                     }
@@ -303,6 +312,21 @@ struct AccountDetailView: View {
             await budgetStore.sync()
             await reload()
         }
+    }
+}
+
+/// Balances after each transaction in a newest-first account register. The
+/// account's current balance is the balance after its newest row; walking
+/// backward subtracts each row to reveal the next older balance.
+enum TransactionRunningBalance {
+    static func values(currentBalance: Int, transactions: [Transaction]) -> [String: Int] {
+        var balance = currentBalance
+        var values: [String: Int] = [:]
+        for transaction in transactions {
+            values[transaction.id] = balance
+            balance -= transaction.amount
+        }
+        return values
     }
 }
 
