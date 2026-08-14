@@ -2925,6 +2925,45 @@ final class BudgetStore: ObservableObject {
         return count
     }
 
+    /// Schedules are existing Actual rows; this is a read-only projection for
+    /// Home and account registers, sorted by their effective next occurrence.
+    func fetchUpcomingSchedules(accountId: String? = nil, limit: Int? = nil) async -> [Schedule] {
+        guard let database else { return [] }
+        do {
+            let schedules = try database.fetchPostableSchedules()
+                .filter { accountId == nil || $0.accountId == accountId }
+                .sorted {
+                    if $0.nextDate != $1.nextDate { return $0.nextDate < $1.nextDate }
+                    return $0.id < $1.id
+                }
+            return limit.map { Array(schedules.prefix($0)) } ?? schedules
+        } catch {
+            logger.error("Failed to fetch upcoming schedules: \(error.localizedDescription, privacy: .public)")
+            return []
+        }
+    }
+
+    /// Post one schedule through the same CRDT writer and recurrence advance
+    /// used by automatic posting, then refresh every derived balance/list.
+    @discardableResult
+    func postScheduleNow(_ schedule: Schedule) async throws -> Int {
+        guard let client = syncClient, let database else {
+            throw BudgetStoreError.syncNotConfigured
+        }
+        let poster: SchedulePoster
+        if let cached = schedulePoster {
+            poster = cached
+        } else {
+            poster = SchedulePoster(database: database, actions: client)
+            schedulePoster = poster
+        }
+        let count = try await poster.postNow(schedule)
+        // A duplicate occurrence can still advance the schedule, so refresh
+        // even when no new transaction needed to be created.
+        await refreshDataOnly()
+        return count
+    }
+
     // MARK: - Budget
 
     /// Most recently requested budget month. BudgetView owns the selected

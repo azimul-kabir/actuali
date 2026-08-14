@@ -4,6 +4,8 @@ struct HomeView: View {
     @EnvironmentObject private var budgetStore: BudgetStore
     @StateObject private var notificationRouter = NotificationRouter.shared
     @State private var showingAddTransaction = false
+    @State private var upcomingSchedules: [Schedule] = []
+    @State private var postingScheduleId: String?
 
     private var openAccounts: [Account] {
         budgetStore.accounts.filter { !$0.closed }
@@ -57,6 +59,10 @@ struct HomeView: View {
                         needsAttentionCard
                     }
 
+                    if !upcomingSchedules.isEmpty {
+                        upcomingCard
+                    }
+
                     recentTransactionsCard
                 }
                 .padding(.horizontal)
@@ -89,6 +95,40 @@ struct HomeView: View {
                     )
                 }
             }
+            .task(id: budgetStore.dataVersion) {
+                upcomingSchedules = await budgetStore.fetchUpcomingSchedules(limit: 5)
+            }
+        }
+    }
+
+    private var upcomingCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Label("Upcoming", systemImage: "calendar.badge.clock")
+                .font(.headline)
+
+            ForEach(upcomingSchedules) { schedule in
+                UpcomingScheduleRow(
+                    schedule: schedule,
+                    showsAccount: true,
+                    isPosting: postingScheduleId == schedule.id
+                ) {
+                    await post(schedule)
+                }
+                if schedule.id != upcomingSchedules.last?.id { Divider() }
+            }
+        }
+        .padding()
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+
+    private func post(_ schedule: Schedule) async {
+        postingScheduleId = schedule.id
+        defer { postingScheduleId = nil }
+        do {
+            try await budgetStore.postScheduleNow(schedule)
+            upcomingSchedules = await budgetStore.fetchUpcomingSchedules(limit: 5)
+        } catch {
+            budgetStore.error = error.localizedDescription
         }
     }
 

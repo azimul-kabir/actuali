@@ -31,7 +31,7 @@ enum ScheduleDateCondition {
 
 /// A schedule eligible for auto-posting, read from the synced Actual tables
 /// (`schedules` + `schedules_next_date` + the linked rule's conditions).
-struct Schedule {
+struct Schedule: Identifiable {
     let id: String
     let name: String?
     /// Effective next occurrence, per loot-core's v_schedules view:

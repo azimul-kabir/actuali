@@ -254,6 +254,22 @@ struct SchedulePosterTests {
         #expect(advance.baseTs == 1000)
     }
 
+    @Test func postNowPostsFutureOccurrenceWithoutUsingDailyRunGate() async throws {
+        let (db, url) = try makeDatabase()
+        defer { cleanup(url) }
+        try insertSchedule(db, nextDate: 20260815)
+        let (poster, actions, defaults, suite) = makePoster(db)
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let schedule = try #require(try db.fetchPostableSchedules().first)
+
+        let posted = try await poster.postNow(schedule, today: Self.today)
+
+        #expect(posted == 1)
+        #expect(actions.created.map(\.date) == [20260815])
+        #expect(actions.advances.map(\.newNextDate) == [20260915])
+        #expect(defaults.integer(forKey: "lastScheduleRun-\(Self.budgetId)") == 0)
+    }
+
     @Test func postedTransactionCarriesScheduleCategory() async throws {
         let (db, url) = try makeDatabase()
         defer { cleanup(url) }

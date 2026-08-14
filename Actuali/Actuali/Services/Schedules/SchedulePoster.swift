@@ -90,6 +90,17 @@ actor SchedulePoster {
         return posted
     }
 
+    /// User-initiated posting bypasses the once-per-day automatic gate. A
+    /// future occurrence is intentionally eligible: "Post Now" records the
+    /// schedule's next stored occurrence, then advances it through the same
+    /// deduplicated path as automatic posting.
+    func postNow(_ schedule: Schedule, today: DayDate = .today()) async throws -> Int {
+        guard !isRunning else { return 0 }
+        isRunning = true
+        defer { isRunning = false }
+        return try await process(schedule, today: max(today, schedule.nextDate))
+    }
+
     /// Post all due occurrences of one schedule, advancing after each.
     private func process(_ schedule: Schedule, today: DayDate) async throws -> Int {
         var current = schedule.nextDate

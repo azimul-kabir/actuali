@@ -20,6 +20,8 @@ struct AccountDetailView: View {
     /// stays hidden until the read confirms this file can store notes.
     @State private var note: EntityNote = .unsupported
     @State private var editingNote = false
+    @State private var upcomingSchedules: [Schedule] = []
+    @State private var postingScheduleId: String?
 
     private var currentBalance: Int {
         budgetStore.accounts.first { $0.id == account.id }?.balance ?? account.balance
@@ -31,7 +33,7 @@ struct AccountDetailView: View {
     }
 
     private var runningBalances: [String: Int] {
-        guard searchQuery == nil, let pager else { return [:] }
+        guard searchQuery == nil, !budgetStore.hideClearedTransactions, let pager else { return [:] }
         return TransactionRunningBalance.values(
             currentBalance: currentBalance,
             transactions: pager.transactions
@@ -60,6 +62,7 @@ struct AccountDetailView: View {
     private func reload() async {
         breakdown = await budgetStore.balanceBreakdown(accountId: account.id)
         await reloadNote()
+        upcomingSchedules = await budgetStore.fetchUpcomingSchedules(accountId: account.id)
         await currentPager().loadFirstPage(search: searchQuery)
     }
 
@@ -159,6 +162,20 @@ struct AccountDetailView: View {
 
             if note.supported && searchQuery == nil {
                 noteSection
+            }
+
+            if searchQuery == nil, !upcomingSchedules.isEmpty {
+                Section("Upcoming") {
+                    ForEach(upcomingSchedules) { schedule in
+                        UpcomingScheduleRow(
+                            schedule: schedule,
+                            showsAccount: false,
+                            isPosting: postingScheduleId == schedule.id
+                        ) {
+                            await post(schedule)
+                        }
+                    }
+                }
             }
 
             if let pager, pager.transactions.isEmpty {
@@ -311,6 +328,17 @@ struct AccountDetailView: View {
         .refreshable {
             await budgetStore.sync()
             await reload()
+        }
+    }
+
+    private func post(_ schedule: Schedule) async {
+        postingScheduleId = schedule.id
+        defer { postingScheduleId = nil }
+        do {
+            try await budgetStore.postScheduleNow(schedule)
+            upcomingSchedules = await budgetStore.fetchUpcomingSchedules(accountId: account.id)
+        } catch {
+            budgetStore.error = error.localizedDescription
         }
     }
 }
