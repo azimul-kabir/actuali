@@ -82,10 +82,15 @@ struct TransactionGroupingTests {
             == expected.formatted(date: .abbreviated, time: .omitted))
     }
 
-    @Test func groupTitleSpellsOutTheDate() {
+    @Test func groupTitleUsesRelativeNamesAndReadableDates() {
         let group = [makeTxn("t-1", date: 20260814)].groupedByDate()[0]
-        #expect(group.title == Transaction.formattedDate(from: 20260814, style: .long))
-        // The long form is what earns dropping the date from every row.
-        #expect(group.title != Transaction.formattedDate(from: 20260814, style: .abbreviated))
+        let calendar = Calendar(identifier: .gregorian)
+        let today = calendar.date(from: DateComponents(year: 2026, month: 8, day: 14))!
+        let tomorrow = calendar.date(from: DateComponents(year: 2026, month: 8, day: 15))!
+        let later = calendar.date(from: DateComponents(year: 2026, month: 8, day: 20))!
+
+        #expect(group.title(relativeTo: today, calendar: calendar) == "Today")
+        #expect(group.title(relativeTo: tomorrow, calendar: calendar) == "Yesterday")
+        #expect(group.title(relativeTo: later, calendar: calendar).contains("Aug"))
     }
 }

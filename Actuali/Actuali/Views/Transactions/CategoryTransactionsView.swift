@@ -149,35 +149,19 @@ struct CategoryTransactionsView: View {
 
     @ViewBuilder
     private var transactionsSection: some View {
-        if budgetStore.transactionDisplayMode == .groupedByDate {
-            // The scope total is the point of this screen, so it keeps a
-            // header of its own above the date sections.
-            Section {
-                if !transactions.isEmpty && filteredTransactions.isEmpty {
-                    Text("No matching transactions")
-                        .foregroundStyle(.secondary)
-                }
-            } header: {
-                scopeHeader
+        Section {
+            if !transactions.isEmpty && filteredTransactions.isEmpty {
+                Text("No matching transactions")
+                    .foregroundStyle(.secondary)
             }
-            ForEach(filteredTransactions.groupedByDate()) { group in
-                Section(group.title) {
-                    ForEach(group.transactions) { transaction in
-                        transactionRow(transaction, showDate: false)
-                    }
+        } header: {
+            scopeHeader
+        }
+        ForEach(filteredTransactions.groupedByDate()) { group in
+            Section(group.title) {
+                ForEach(group.transactions) { transaction in
+                    transactionRow(transaction, showDate: false)
                 }
-            }
-        } else {
-            Section {
-                if !transactions.isEmpty && filteredTransactions.isEmpty {
-                    Text("No matching transactions")
-                        .foregroundStyle(.secondary)
-                }
-                ForEach(filteredTransactions) { transaction in
-                    transactionRow(transaction, showDate: true)
-                }
-            } header: {
-                scopeHeader
             }
         }
     }

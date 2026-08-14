@@ -51,29 +51,17 @@ struct TransactionsListView: View {
                 }
             } else if let pager {
                 List {
-                    if budgetStore.transactionDisplayMode == .groupedByDate {
-                        let groups = pager.transactions.groupedByDate()
-                        ForEach(groups) { group in
-                            Section(group.title) {
-                                ForEach(group.transactions) { transaction in
-                                    TransactionListRow(transaction: transaction,
-                                                       showDate: false,
-                                                       editing: $editingTransaction)
-                                }
-                                // The sentinel rides in the last date section
-                                // so grouped mode doesn't grow a headerless
-                                // section (and its gap) of its own.
-                                if pager.hasMore, group.id == groups.last?.id {
-                                    TransactionPagingSentinel(pager: pager)
-                                }
+                    let groups = pager.transactions.groupedByDate()
+                    ForEach(groups) { group in
+                        Section(group.title) {
+                            ForEach(group.transactions) { transaction in
+                                TransactionListRow(transaction: transaction,
+                                                   showDate: false,
+                                                   editing: $editingTransaction)
                             }
-                        }
-                    } else {
-                        ForEach(pager.transactions) { transaction in
-                            TransactionListRow(transaction: transaction, editing: $editingTransaction)
-                        }
-                        if pager.hasMore {
-                            TransactionPagingSentinel(pager: pager)
+                            if pager.hasMore, group.id == groups.last?.id {
+                                TransactionPagingSentinel(pager: pager)
+                            }
                         }
                     }
                 }
@@ -84,9 +72,6 @@ struct TransactionsListView: View {
         .navigationTitle("All Accounts")
         .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search transactions")
         .toolbar {
-            ToolbarItem(placement: .secondaryAction) {
-                TransactionGroupingToggle()
-            }
             ToolbarItem(placement: .secondaryAction) {
                 Toggle("Hide Cleared Transactions", isOn: $budgetStore.hideClearedTransactions)
             }
@@ -137,13 +122,15 @@ struct TransactionListRow: View {
     let transaction: Transaction
     var showAccount: Bool = true
     var showDate: Bool = true
+    var runningBalance: Int? = nil
     @Binding var editing: Transaction?
 
     var body: some View {
         Button {
             editing = transaction
         } label: {
-            TransactionRow(transaction: transaction, showAccount: showAccount, showDate: showDate, onToggleCleared: {
+            TransactionRow(transaction: transaction, showAccount: showAccount, showDate: showDate,
+                           runningBalance: runningBalance, onToggleCleared: {
                 Task { await budgetStore.toggleCleared(transaction) }
             })
             .contentShape(Rectangle())
@@ -179,28 +166,12 @@ struct TransactionPagingSentinel: View {
     }
 }
 
-/// Flat-vs-grouped switch for the transaction list toolbars.
-///
-/// A Toggle rather than the Picker Settings uses: `.secondaryAction` silently
-/// drops a Picker when it collapses into the `…` menu (inline or not), while a
-/// Toggle renders — same as the "Hide Cleared Transactions" switch beside it.
-/// The mode only has two cases, so nothing is lost.
-struct TransactionGroupingToggle: View {
-    @EnvironmentObject private var budgetStore: BudgetStore
-
-    var body: some View {
-        Toggle("Group by Date", isOn: Binding(
-            get: { budgetStore.transactionDisplayMode == .groupedByDate },
-            set: { budgetStore.transactionDisplayMode = $0 ? .groupedByDate : .flat }
-        ))
-    }
-}
-
 struct TransactionRow: View {
     @EnvironmentObject var budgetStore: BudgetStore
     let transaction: Transaction
     var showAccount: Bool = true
     var showDate: Bool = true
+    var runningBalance: Int? = nil
     /// Tap action for the cleared-status dot. Nil leaves the dot inert
     /// (split-child rows, contexts without a reload path). Reconciled rows
     /// confirm before invoking, since the store unlocks them instead.
@@ -314,6 +285,10 @@ struct TransactionRow: View {
                     .foregroundColor(transaction.isOutflow ? .primary : .green)
                 if showDate {
                     Text(transaction.dateFormatted)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if let runningBalance {
+                    Text("Balance \(budgetStore.displayBalance(runningBalance))")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

@@ -80,17 +80,11 @@ struct UncategorizedTransactionsView: View {
                         Text("No matching transactions")
                             .foregroundStyle(.secondary)
                     }
-                    if budgetStore.transactionDisplayMode == .groupedByDate {
-                        ForEach(filteredTransactions.groupedByDate()) { group in
-                            Section(group.title) {
-                                ForEach(group.transactions) { transaction in
-                                    transactionRow(transaction, showDate: false)
-                                }
+                    ForEach(filteredTransactions.groupedByDate()) { group in
+                        Section(group.title) {
+                            ForEach(group.transactions) { transaction in
+                                transactionRow(transaction, showDate: false)
                             }
-                        }
-                    } else {
-                        ForEach(filteredTransactions) { transaction in
-                            transactionRow(transaction, showDate: true)
                         }
                     }
                 }

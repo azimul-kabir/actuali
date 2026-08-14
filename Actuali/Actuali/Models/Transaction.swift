@@ -160,9 +160,21 @@ struct TransactionDateGroup: Identifiable {
     var id: Int { date }
     var transactions: [Transaction]
 
-    /// Section header for the group. Spelled out in full because the rows
-    /// underneath drop their own date once they're grouped.
-    var title: String { Transaction.formattedDate(from: date, style: .long) }
+    var title: String { title(relativeTo: Date()) }
+
+    /// Friendly section title without sacrificing clarity for older years.
+    func title(relativeTo referenceDate: Date, calendar: Calendar = .current) -> String {
+        let value = Transaction.date(fromYYYYMMDD: date)
+        if calendar.isDate(value, inSameDayAs: referenceDate) { return "Today" }
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: referenceDate),
+           calendar.isDate(value, inSameDayAs: yesterday) {
+            return "Yesterday"
+        }
+        if calendar.component(.year, from: value) == calendar.component(.year, from: referenceDate) {
+            return value.formatted(.dateTime.weekday(.wide).month(.abbreviated).day())
+        }
+        return value.formatted(.dateTime.weekday(.wide).month(.abbreviated).day().year())
+    }
 }
 
 extension Array where Element == Transaction {

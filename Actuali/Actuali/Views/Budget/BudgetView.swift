@@ -1226,8 +1226,13 @@ struct CategoryBudgetDetailSheet: View {
 
                 if !recentTransactions.isEmpty {
                     Section("Recent Activity") {
-                        ForEach(recentTransactions.prefix(3)) { transaction in
-                            TransactionRow(transaction: transaction)
+                        ForEach(Array(recentTransactions.prefix(3)).groupedByDate()) { group in
+                            Text(group.title)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            ForEach(group.transactions) { transaction in
+                                TransactionRow(transaction: transaction, showDate: false)
+                            }
                         }
                     }
                 }

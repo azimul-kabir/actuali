@@ -30,6 +30,14 @@ struct AccountDetailView: View {
         return trimmed.isEmpty ? nil : trimmed
     }
 
+    private var runningBalances: [String: Int] {
+        guard searchQuery == nil, !budgetStore.hideClearedTransactions, let pager else { return [:] }
+        return TransactionRunningBalance.values(
+            currentBalance: currentBalance,
+            transactions: pager.transactions
+        )
+    }
+
     /// The pager is created on first use rather than in init because its
     /// fetch closure needs the environment store, which isn't available
     /// until body/task time. Rebuilt when the account changes: the closure
@@ -154,32 +162,17 @@ struct AccountDetailView: View {
             }
 
             if let pager, !pager.transactions.isEmpty {
-                if budgetStore.transactionDisplayMode == .groupedByDate {
-                    let groups = pager.transactions.groupedByDate()
-                    ForEach(groups) { group in
-                        Section(group.title) {
-                            ForEach(group.transactions) { transaction in
-                                TransactionListRow(transaction: transaction,
-                                                   showAccount: false,
-                                                   showDate: false,
-                                                   editing: $editingTransaction)
-                            }
-                            // The sentinel rides in the last date section so
-                            // grouped mode doesn't grow a headerless section
-                            // (and its gap) of its own.
-                            if pager.hasMore, group.id == groups.last?.id {
-                                TransactionPagingSentinel(pager: pager)
-                            }
-                        }
-                    }
-                } else {
-                    Section("Recent Transactions") {
-                        ForEach(pager.transactions) { transaction in
+                let groups = pager.transactions.groupedByDate()
+                ForEach(groups) { group in
+                    Section(group.title) {
+                        ForEach(group.transactions) { transaction in
                             TransactionListRow(transaction: transaction,
                                                showAccount: false,
+                                               showDate: false,
+                                               runningBalance: runningBalances[transaction.id],
                                                editing: $editingTransaction)
                         }
-                        if pager.hasMore {
+                        if pager.hasMore, group.id == groups.last?.id {
                             TransactionPagingSentinel(pager: pager)
                         }
                     }
@@ -212,9 +205,6 @@ struct AccountDetailView: View {
                         Label("Import from Wallet", systemImage: "wallet.pass")
                     }
                 }
-            }
-            ToolbarItem(placement: .secondaryAction) {
-                TransactionGroupingToggle()
             }
             ToolbarItem(placement: .secondaryAction) {
                 Toggle("Hide Cleared Transactions", isOn: $budgetStore.hideClearedTransactions)
@@ -297,6 +287,21 @@ struct AccountDetailView: View {
             await budgetStore.sync()
             await reload()
         }
+    }
+}
+
+/// Balances after each transaction in a newest-first account register. The
+/// current account balance belongs to the newest row; walking backward removes
+/// each transaction to reveal the balance after the next older row.
+enum TransactionRunningBalance {
+    static func values(currentBalance: Int, transactions: [Transaction]) -> [String: Int] {
+        var balance = currentBalance
+        var values: [String: Int] = [:]
+        for transaction in transactions {
+            values[transaction.id] = balance
+            balance -= transaction.amount
+        }
+        return values
     }
 }
 
