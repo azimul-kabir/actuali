@@ -443,12 +443,8 @@ struct AddTransactionView: View {
 
                 Section {
                     Button(action: { Task { await saveTransaction(keepOpen: false) } }) {
-                        HStack {
-                            Spacer()
-                            Text(saveButtonTitle)
-                                .fontWeight(.semibold)
-                            Spacer()
-                        }
+                        Text(saveButtonTitle)
+                            .fontWeight(.semibold)
                     }
                     .disabled(saveDisabled)
                     // Hardware-keyboard commit, for the iPad case where the
@@ -459,11 +455,7 @@ struct AddTransactionView: View {
 
                     if !isEditing && !isTransfer {
                         Button(action: { Task { await saveTransaction(keepOpen: true) } }) {
-                            HStack {
-                                Spacer()
-                                Label("Save & Add Another", systemImage: "plus")
-                                Spacer()
-                            }
+                            Label("Save & Add Another", systemImage: "plus")
                         }
                         .disabled(saveDisabled)
                     }
