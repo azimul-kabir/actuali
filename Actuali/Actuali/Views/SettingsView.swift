@@ -21,6 +21,7 @@ struct SettingsView: View {
         ("֏", "AMD"),
         ("Arg$", "ARS"),
         ("A$", "AUD"),
+        ("৳", "BDT"),
         ("R$", "BRL"),
         ("Br", "BYN"),
         ("C$", "CAD"),

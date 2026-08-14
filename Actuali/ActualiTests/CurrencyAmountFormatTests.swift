@@ -58,4 +58,11 @@ struct CurrencyAmountFormatTests {
         #expect(standard == "¥1,234")
         #expect(narrow == "¥1,234")
     }
+
+    @Test func bangladeshiTakaUsesItsNativeSymbol() {
+        let formatted = CurrencyAmountFormat.string(
+            cents: 123_450, currencyCode: "BDT", narrowSymbol: true, locale: enUS)
+        #expect(formatted.contains("৳"))
+        #expect(!formatted.contains("BDT"))
+    }
 }
