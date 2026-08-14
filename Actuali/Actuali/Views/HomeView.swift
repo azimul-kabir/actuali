@@ -97,7 +97,7 @@ struct HomeView: View {
             Text("Money overview")
                 .font(.headline)
 
-            HStack(alignment: .firstTextBaseline) {
+            HStack(alignment: .top, spacing: 16) {
                 metric(
                     title: "On budget",
                     value: formatted(onBudgetBalance),
@@ -118,7 +118,7 @@ struct HomeView: View {
     }
 
     private func budgetCard(_ month: BudgetMonth) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 16) {
             HStack {
                 Text("This month")
                     .font(.headline)
@@ -129,7 +129,7 @@ struct HomeView: View {
             }
 
             if let toBudget = month.toBudget {
-                VStack(alignment: .leading, spacing: 5) {
+                VStack(alignment: .leading, spacing: 6) {
                     Label("Ready to assign", systemImage: "tray.full")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
@@ -140,22 +140,20 @@ struct HomeView: View {
                         .minimumScaleFactor(0.75)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-
-                Divider()
             }
 
-            HStack(alignment: .firstTextBaseline) {
-                metric(
+            Divider()
+
+            HStack(spacing: 12) {
+                compactMetric(
                     title: "Available",
                     value: formatted(month.totalAvailable),
                     systemImage: "checkmark.circle"
                 )
 
-                Divider()
-
-                metric(
+                compactMetric(
                     title: "Spent",
-                    value: formatted(month.totalSpent),
+                    value: formattedSpent(month.totalSpent),
                     systemImage: "arrow.down.circle"
                 )
             }
@@ -258,6 +256,23 @@ struct HomeView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    private func compactMetric(title: String, value: String, systemImage: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label(title, systemImage: systemImage)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Text(value)
+                .font(.headline.weight(.semibold))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
     private func formattedMonth(_ value: String) -> String {
         let parts = value.split(separator: "-")
         guard parts.count == 2,
@@ -285,13 +300,15 @@ struct HomeView: View {
         return transaction.amount < 0 ? "arrow.up.right" : "arrow.down.left"
     }
 
+    private func formattedSpent(_ cents: Int) -> String {
+        guard !budgetStore.hideBalances else { return BudgetStore.hiddenBalanceText }
+        return cents > 0
+            ? "+\(budgetStore.formatCurrency(cents))"
+            : budgetStore.formatCurrency(-cents)
+    }
+
     private func formatted(_ cents: Int) -> String {
-        guard !budgetStore.hideBalances else { return "••••" }
-        return CurrencyAmountFormat.string(
-            cents: cents,
-            currencyCode: budgetStore.currencyCode,
-            narrowSymbol: budgetStore.useNarrowCurrencySymbol
-        )
+        budgetStore.displayBalance(cents)
     }
 }
 
