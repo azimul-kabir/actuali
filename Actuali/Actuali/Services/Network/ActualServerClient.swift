@@ -194,6 +194,7 @@ enum ServerVersion {
 actor ActualServerClient {
     private let session: URLSession
     private var serverURL: URL?
+    private var fallbackServerURL: URL?
     private var token: String?
 
     /// User-supplied headers stamped onto every outgoing request, in order.
@@ -218,11 +219,21 @@ actor ActualServerClient {
 
     // MARK: - Configuration
 
-    func configure(serverURL: String) throws {
+    func configure(serverURL: String, fallbackServerURL: String = "") throws {
         guard let url = URL(string: serverURL) else {
             throw ActualServerError.invalidURL
         }
+        let fallbackURL: URL?
+        if fallbackServerURL.isEmpty {
+            fallbackURL = nil
+        } else {
+            guard let url = URL(string: fallbackServerURL) else {
+                throw ActualServerError.invalidURL
+            }
+            fallbackURL = url
+        }
         self.serverURL = url
+        self.fallbackServerURL = fallbackURL
     }
 
     func setToken(_ token: String?) {
@@ -251,10 +262,67 @@ actor ActualServerClient {
         do {
             return try await session.data(for: request)
         } catch let urlError as URLError where urlError.code != .cancelled {
+            if let fallbackServerURL,
+               let requestURL = request.url,
+               let serverURL,
+               requestURL.host == serverURL.host {
+                var fallbackRequest = request
+                fallbackRequest.url = Self.fallbackRequestURL(
+                    requestURL: requestURL,
+                    primaryServerURL: serverURL,
+                    fallbackServerURL: fallbackServerURL
+                )
+                do {
+                    let result = try await session.data(for: fallbackRequest)
+                    // Keep using the reachable address for the rest of this
+                    // session instead of waiting for the primary on every request.
+                    serverURL = fallbackServerURL
+                    return result
+                } catch let fallbackError as URLError where fallbackError.code != .cancelled {
+                    throw ActualServerError.networkError(fallbackError)
+                }
+            }
             // Cancellation is ordinary control flow (a superseded refresh, a
             // screen the user left), so it propagates untouched.
             throw ActualServerError.networkError(urlError)
         }
+    }
+
+    /// Rebase an API request from the primary server onto the fallback while
+    /// preserving path prefixes on either address (for example `/actual`).
+    private static func fallbackRequestURL(
+        requestURL: URL,
+        primaryServerURL: URL,
+        fallbackServerURL: URL
+    ) -> URL? {
+        let primaryPath = primaryServerURL.path(percentEncoded: true)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let requestPath = requestURL.path(percentEncoded: true)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let endpointPath: Substring
+        if !primaryPath.isEmpty,
+           requestPath == primaryPath || requestPath.hasPrefix(primaryPath + "/") {
+            endpointPath = requestPath.dropFirst(primaryPath.count)
+        } else {
+            endpointPath = requestPath[...]
+        }
+
+        var components = URLComponents(
+            url: fallbackServerURL,
+            resolvingAgainstBaseURL: false
+        )
+        let fallbackPath = fallbackServerURL.path(percentEncoded: true)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let endpoint = String(endpointPath)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        components?.percentEncodedPath = "/" + [fallbackPath, endpoint]
+            .filter { !$0.isEmpty }
+            .joined(separator: "/")
+        components?.percentEncodedQuery = URLComponents(
+            url: requestURL,
+            resolvingAgainstBaseURL: false
+        )?.percentEncodedQuery
+        return components?.url
     }
 
     /// Whether a response looks like an auth proxy's login page rather than the
@@ -380,7 +448,7 @@ actor ActualServerClient {
         var request = makeRequest(url)
         request.httpMethod = "GET"
 
-        guard let (data, response) = try? await session.data(for: request),
+        guard let (data, response) = try? await send(request),
               let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200,
               let created = try? JSONDecoder().decode(Bool.self, from: data) else {
@@ -405,7 +473,7 @@ actor ActualServerClient {
         var request = makeRequest(url)
         request.httpMethod = "GET"
 
-        guard let (data, response) = try? await session.data(for: request),
+        guard let (data, response) = try? await send(request),
               let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200,
               let info = try? JSONDecoder().decode(ServerInfoResponse.self, from: data) else {
