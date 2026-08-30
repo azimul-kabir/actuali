@@ -13,6 +13,7 @@ struct BudgetViewSettingsView: View {
                 Picker("View Style", selection: $budgetStore.budgetDisplayStyle) {
                     Text("Clean").tag(BudgetDisplayStyle.clean)
                     Text("Detailed").tag(BudgetDisplayStyle.detailed)
+                    Text("Plan").tag(BudgetDisplayStyle.plan)
                 }
 
                 Toggle("Group Totals", isOn: $budgetStore.showGroupTotals)
@@ -22,6 +23,9 @@ struct BudgetViewSettingsView: View {
                 Toggle("Hide Spent Categories", isOn: $budgetStore.hideZeroBudgetCategories)
                 Toggle("Category Status Dots", isOn: $budgetStore.showCategoryStatusDots)
                 Toggle("Budget Progress Bars", isOn: $budgetStore.showBudgetProgressBars)
+                    .disabled(budgetStore.budgetDisplayStyle == .plan)
+                Toggle("Plan Progress Bars", isOn: $budgetStore.showPlanProgressBars)
+                    .disabled(budgetStore.budgetDisplayStyle != .plan)
                 Toggle("Overspent Badge", isOn: $budgetStore.showOverspentBadge)
             } header: {
                 Text("Presentation")

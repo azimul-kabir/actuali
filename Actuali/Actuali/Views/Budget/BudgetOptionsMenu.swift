@@ -50,6 +50,8 @@ struct BudgetOptionsMenu: View {
                     .tag(BudgetDisplayStyle.clean)
                 Label("Detailed", systemImage: "tablecells")
                     .tag(BudgetDisplayStyle.detailed)
+                Label("Plan", systemImage: "list.bullet.below.rectangle")
+                    .tag(BudgetDisplayStyle.plan)
             }
             .pickerStyle(.inline)
 
@@ -69,6 +71,11 @@ struct BudgetOptionsMenu: View {
             // Amount masking isn't here: it's app-wide, so it lives in
             // Settings (GH #158) rather than in any one tab's menu.
             Section {
+                if budgetStore.budgetDisplayStyle == .plan {
+                    Toggle(isOn: $budgetStore.showPlanProgressBars) {
+                        Label("Progress Bars", systemImage: "chart.bar.fill")
+                    }
+                }
                 // Only the detailed style has columns for a group header to
                 // total, so the clean style doesn't offer the switch.
                 if budgetStore.budgetDisplayStyle == .detailed {
@@ -76,8 +83,10 @@ struct BudgetOptionsMenu: View {
                         Label("Group Totals", systemImage: "sum")
                     }
                 }
-                Toggle(isOn: $budgetStore.showBudgetCheckInStrip) {
-                    Label("Status Filters", systemImage: "line.3.horizontal.decrease.circle")
+                if budgetStore.budgetDisplayStyle != .plan {
+                    Toggle(isOn: $budgetStore.showBudgetCheckInStrip) {
+                        Label("Status Filters", systemImage: "line.3.horizontal.decrease.circle")
+                    }
                 }
                 Toggle(isOn: $budgetStore.hideZeroBudgetCategories) {
                     Label("Hide Spent", systemImage: "line.3.horizontal.decrease")

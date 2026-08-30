@@ -341,6 +341,15 @@ final class BudgetStore: ObservableObject {
         }
     }
 
+    /// Whether the Plan layout expands a category into its spent/status line.
+    /// Kept separate from the established Clean/Detailed progress preference:
+    /// changing Plan's density must not alter either existing layout.
+    @Published var showPlanProgressBars: Bool = false {
+        didSet {
+            UserDefaults.standard.set(showPlanProgressBars, forKey: "showPlanProgressBars")
+        }
+    }
+
     /// Whether Budget rows show their compact category-status dot.
     /// Persisted to UserDefaults, defaults to on.
     @Published var showCategoryStatusDots: Bool = true {
@@ -1129,6 +1138,8 @@ final class BudgetStore: ObservableObject {
         _uncategorizedTapAction = Published(initialValue: UncategorizedTapAction.persisted)
         _showBudgetProgressBars = Published(initialValue: UserDefaults.standard
             .object(forKey: "showBudgetProgressBars") as? Bool ?? true)
+        _showPlanProgressBars = Published(initialValue: UserDefaults.standard
+            .object(forKey: "showPlanProgressBars") as? Bool ?? false)
         _showCategoryStatusDots = Published(initialValue: UserDefaults.standard
             .object(forKey: "showCategoryStatusDots") as? Bool ?? true)
         _showGroupTotals = Published(initialValue: UserDefaults.standard

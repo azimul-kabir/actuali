@@ -15,10 +15,22 @@ struct BudgetStoreDisplayStyleTests {
 
     @Test func selectionPersistsToUserDefaults() {
         let store = BudgetStore.previewInstance()
-        store.budgetDisplayStyle = .detailed
-        #expect(UserDefaults.standard.string(forKey: "budgetDisplayStyle") == "detailed")
+        store.budgetDisplayStyle = .plan
+        #expect(UserDefaults.standard.string(forKey: "budgetDisplayStyle") == "plan")
         store.budgetDisplayStyle = .clean
         #expect(UserDefaults.standard.string(forKey: "budgetDisplayStyle") == "clean")
+    }
+
+    @Test func planProgressPreferenceIsIndependent() {
+        let store = BudgetStore.previewInstance()
+        store.showBudgetProgressBars = true
+        store.showPlanProgressBars = false
+
+        store.showPlanProgressBars = true
+
+        #expect(store.showPlanProgressBars)
+        #expect(store.showBudgetProgressBars)
+        #expect(UserDefaults.standard.bool(forKey: "showPlanProgressBars"))
     }
 
     /// Raw values round-trip, and unknown raw values (from a future build)

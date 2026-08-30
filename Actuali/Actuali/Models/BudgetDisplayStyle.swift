@@ -7,4 +7,8 @@ import Foundation
 enum BudgetDisplayStyle: String, CaseIterable {
     case clean
     case detailed
+    /// A compact planning workspace. This is intentionally a separate view
+    /// rather than another branch inside Clean/Detailed so the established
+    /// Budget tab layouts and interactions stay unchanged.
+    case plan
 }

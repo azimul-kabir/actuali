@@ -74,6 +74,7 @@ struct BudgetView: View {
     @State private var selectedMonth = currentMonthString()
     @State private var editingCategory: CategoryBudget?
     @State private var selectedCategory: CategoryBudget?
+    @State private var planCategory: CategoryBudget?
     @State private var transferContext: BudgetTransferContext?
     @State private var transactionsDestination: CategoryTransactionsDestination?
     @State private var newBudgetItem: NewBudgetItem?
@@ -81,6 +82,7 @@ struct BudgetView: View {
     /// Comma-joined group ids the user has collapsed, PWA-style. Stored as a
     /// string because @AppStorage can't hold a Set directly.
     @AppStorage("collapsedBudgetGroups") private var collapsedGroupsStorage = ""
+    @AppStorage("collapsedPlanBudgetGroups") private var collapsedPlanGroupsStorage = ""
 
     private var collapsedGroups: Set<String> {
         Set(collapsedGroupsStorage.split(separator: ",").map(String.init))
@@ -103,8 +105,13 @@ struct BudgetView: View {
                 !displayedIncomeCategories(in: $0).isEmpty
             } ?? false
         )
-        let groups = collapsedGroups.union(displayedGroupIDs)
-        collapsedGroupsStorage = groups.sorted().joined(separator: ",")
+        if budgetStore.budgetDisplayStyle == .plan {
+            let existing = Set(collapsedPlanGroupsStorage.split(separator: ",").map(String.init))
+            collapsedPlanGroupsStorage = existing.union(displayedGroupIDs).sorted().joined(separator: ",")
+        } else {
+            let groups = collapsedGroups.union(displayedGroupIDs)
+            collapsedGroupsStorage = groups.sorted().joined(separator: ",")
+        }
     }
 
     private func expandAllGroups() {
@@ -114,15 +121,24 @@ struct BudgetView: View {
                 !displayedIncomeCategories(in: $0).isEmpty
             } ?? false
         )
-        let groups = collapsedGroups.subtracting(displayedGroupIDs)
-        collapsedGroupsStorage = groups.sorted().joined(separator: ",")
+        if budgetStore.budgetDisplayStyle == .plan {
+            let existing = Set(collapsedPlanGroupsStorage.split(separator: ",").map(String.init))
+            collapsedPlanGroupsStorage = existing.subtracting(displayedGroupIDs).sorted().joined(separator: ",")
+        } else {
+            let groups = collapsedGroups.subtracting(displayedGroupIDs)
+            collapsedGroupsStorage = groups.sorted().joined(separator: ",")
+        }
     }
 
     var body: some View {
         NavigationStack {
             Group {
                 if let budget = budgetStore.currentBudgetMonth {
-                    loadedBudgetContent(budget)
+                    if budgetStore.budgetDisplayStyle == .plan {
+                        planBudgetContent(budget)
+                    } else {
+                        loadedBudgetContent(budget)
+                    }
                 } else if !budgetStore.isLoading {
                     if budgetStore.isConnected && budgetStore.currentBudgetId == nil {
                         ContentUnavailableView(
@@ -165,6 +181,25 @@ struct BudgetView: View {
             .sheet(item: $selectedCategory) { category in
                 CategoryBudgetDetailSheet(category: category)
             }
+            .sheet(item: $planCategory) { category in
+                PlanCategoryDetailSheet(
+                    category: category,
+                    onEditAmount: {
+                        planCategory = nil
+                        Task { @MainActor in editingCategory = category }
+                    },
+                    onMoveMoney: {
+                        planCategory = nil
+                        Task { @MainActor in moveMoney(category) }
+                    },
+                    onShowActivity: {
+                        planCategory = nil
+                        Task { @MainActor in
+                            showTransactions(category, month: category.month)
+                        }
+                    }
+                )
+            }
             .sheet(item: $transferContext) { context in
                 BudgetTransferSheet(context: context)
             }
@@ -186,6 +221,19 @@ struct BudgetView: View {
             }
         }
         .initialSyncBanner()
+    }
+
+    private func planBudgetContent(_ budget: BudgetMonth) -> some View {
+        PlanBudgetView(
+            budget: budget,
+            onEditAmount: { editingCategory = $0 },
+            onShowDetails: { planCategory = $0 },
+            onMoveMoney: moveMoney,
+            onShowTransactions: showTransactions,
+            onShowIncomeTransactions: showTransactions
+        )
+        .readableWidth()
+        .background(Color(.systemGroupedBackground).ignoresSafeArea())
     }
 
     /// One group's rows, extracted from the `List` so the body stays within
