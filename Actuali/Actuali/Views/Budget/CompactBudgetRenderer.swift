@@ -354,6 +354,7 @@ struct CompactCategoryBudgetRow: View {
     /// Apply this category's own templates (GH #495); nil hides the item —
     /// callers gate it on the goalTemplatesEnabled flag.
     var onApplyTemplate: ((CategoryBudget) -> Void)?
+    let onRename: (CategoryBudget) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -380,7 +381,8 @@ struct CompactCategoryBudgetRow: View {
             onEditBudget: onEditBudget,
             onShowTransactions: onShowTransactions,
             onMoveMoney: onMoveMoney,
-            onApplyTemplate: onApplyTemplate
+            onApplyTemplate: onApplyTemplate,
+            onRename: onRename
         ))
     }
 
@@ -905,18 +907,6 @@ private struct CompactAmountText: View {
         case .zero: return .secondary
         case .positive: return .green
         case .masked: return .primary
-        }
-    }
-}
-
-extension View {
-    @ViewBuilder
-    func budgetListStyle(for style: BudgetDisplayStyle) -> some View {
-        switch style {
-        case .compact:
-            listStyle(.plain)
-        case .clean:
-            self
         }
     }
 }

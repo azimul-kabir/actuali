@@ -423,6 +423,47 @@ struct TransactionRow: View {
         )
     }
 
+    /// The note, wrapping over as many lines as it needs, with each `#tag`
+    /// drawn as a colored chip in place so the tags read as part of the note.
+    private func noteLine(_ notes: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(Array(notes.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).enumerated()), id: \.offset) { _, line in
+                if line.allSatisfy(\.isWhitespace) {
+                    Text(verbatim: " ").font(.caption)
+                } else {
+                    FlowLayout(spacing: 4, lineSpacing: 2) {
+                        ForEach(Array(TagFilter.noteSegments(String(line)).enumerated()), id: \.offset) { _, segment in
+                            switch segment {
+                            case .text(let text):
+                                ForEach(Array(text.split(separator: " ").enumerated()), id: \.offset) { _, word in
+                                    Text(word)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            case .tag(let rawTag):
+                                tagChip(rawTag)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(notes)
+    }
+
+    private func tagChip(_ rawTag: String) -> some View {
+        let match = budgetStore.tagsByName[Tag.normalizeTagName(rawTag).lowercased()]
+        let tagColor = match?.swiftUIColor ?? .secondary
+        return Text(rawTag)
+            .font(.system(size: 10, weight: .semibold))
+            .lineLimit(1)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1.5)
+            .background(tagColor.opacity(0.15), in: Capsule())
+            .foregroundStyle(tagColor)
+    }
+
     var body: some View {
         HStack(spacing: 10) {
             if isSelectionMode {
@@ -486,42 +527,24 @@ struct TransactionRow: View {
                     Text(categoryLabel)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                    if let notes = transaction.notes, !notes.isEmpty {
-                        let extractedTags = TagFilter.extractHashtags(from: notes)
-                        if !extractedTags.isEmpty {
-                            ForEach(extractedTags.prefix(2), id: \.self) { rawTag in
-                                let clean = Tag.normalizeTagName(rawTag)
-                                let match = budgetStore.tagsByName[clean.lowercased()]
-                                let tagColor = match?.swiftUIColor ?? .secondary
-                                Text(rawTag)
-                                    .font(.system(size: 10, weight: .semibold))
-                                    .lineLimit(1)
-                                    .fixedSize(horizontal: true, vertical: false)
-                                    .padding(.horizontal, 5)
-                                    .padding(.vertical, 1.5)
-                                    .background(tagColor.opacity(0.15), in: Capsule())
-                                    .foregroundStyle(tagColor)
-                            }
-                        }
-                        Text("・")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text(notes)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
                 }
+                if let notes = transaction.notes, !notes.isEmpty {
+                    noteLine(notes)
+                }
+            }
+            // Take all the width the amount column leaves. A trailing Spacer
+            // would claim half of it, wrapping notes well before the amount.
+            .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .trailing, spacing: 2) {
+                Text(budgetStore.displayBalance(transaction.amount))
+                    .foregroundColor(transaction.isOutflow ? .primary : .green)
                 if showAccount {
                     Text(accountName)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: 120, alignment: .trailing)
                 }
-            }
-            Spacer()
-            VStack(alignment: .trailing, spacing: 2) {
-                Text(budgetStore.displayBalance(transaction.amount))
-                    .foregroundColor(transaction.isOutflow ? .primary : .green)
                 if let runningBalance = transaction.runningBalance {
                     Text(budgetStore.displayBalance(runningBalance))
                         .foregroundStyle(balanceColor(for: runningBalance))
