@@ -30,8 +30,12 @@ struct AddTransactionView: View {
 
     @State private var selectedAccountId: String
     @State private var amount: String
-    @State private var txType: TransactionType
+    /// The amount's sign, as in Actual: false is money out (an expense, or a
+    /// transfer to the other account), true is money in.
+    @State private var isInflow: Bool
     @State private var payeeName: String
+    /// The other account of a transfer: choosing an account as the payee
+    /// makes this a transfer, as in Actual. Nil for a regular transaction.
     @State private var transferToAccountId: String?
     @State private var selectedCategoryId: String?
     @State private var notes: String
@@ -78,7 +82,7 @@ struct AddTransactionView: View {
         self.autofocusAmount = autofocusAmount
         _selectedAccountId = State(initialValue: accountId)
         _amount = State(initialValue: amountCents.map { String(format: "%.2f", Double(abs($0)) / 100.0) } ?? "")
-        _txType = State(initialValue: isIncome ? .income : .expense)
+        _isInflow = State(initialValue: isIncome)
         _payeeName = State(initialValue: payee)
         _transferToAccountId = State(initialValue: nil)
         _selectedCategoryId = State(initialValue: categoryId)
@@ -90,9 +94,9 @@ struct AddTransactionView: View {
         _userPickedCategory = State(initialValue: categoryId != nil)
     }
 
-    /// Initializer for the "Edit" flow. Transfer legs load as transfers —
-    /// From/To derive from the leg's sign (the opened row can be either side)
-    /// with the partner account read off the transfer payee (GH #104).
+    /// Initializer for the "Edit" flow. Transfer legs load as transfers: the
+    /// opened row's account is the form's account, its sign the direction, and
+    /// the partner account is read off the transfer payee (GH #104).
     init(editing: Transaction) {
         self.editing = editing
         self.onSaved = nil
@@ -103,23 +107,11 @@ struct AddTransactionView: View {
         let cents = abs(editing.amount)
         let dollars = Double(cents) / 100.0
         _amount = State(initialValue: String(format: "%.2f", dollars))
-        if editing.transferId != nil {
-            _txType = State(initialValue: .transfer)
-            if editing.amount < 0 {
-                _selectedAccountId = State(initialValue: editing.accountId)
-                _transferToAccountId = State(initialValue: editing.transferAcct)
-            } else {
-                // Partner unknown (transfer payee missing): fall back to the
-                // leg's own account as From and let the user pick To.
-                _selectedAccountId = State(initialValue: editing.transferAcct ?? editing.accountId)
-                _transferToAccountId = State(initialValue:
-                    editing.transferAcct == nil ? nil : editing.accountId)
-            }
-        } else {
-            _txType = State(initialValue: editing.amount < 0 ? .expense : .income)
-            _selectedAccountId = State(initialValue: editing.accountId)
-            _transferToAccountId = State(initialValue: nil)
-        }
+        // The opened row's own account and sign, whether or not it is a
+        // transfer leg: a transfer's other account is the payee side.
+        _isInflow = State(initialValue: editing.amount >= 0)
+        _selectedAccountId = State(initialValue: editing.accountId)
+        _transferToAccountId = State(initialValue: editing.transferId != nil ? editing.transferAcct : nil)
         _payeeName = State(initialValue: editing.payeeName ?? "")
         _selectedCategoryId = State(initialValue: editing.categoryId)
         _notes = State(initialValue: editing.notes ?? "")
@@ -142,8 +134,49 @@ struct AddTransactionView: View {
         isEditing || isPresented
     }
 
+    /// A transfer is a transaction whose payee is another account. An existing
+    /// transfer stays one even if its partner can't be resolved.
     private var isTransfer: Bool {
-        txType == .transfer
+        transferToAccountId != nil || isEditingTransfer
+    }
+
+    private var txType: TransactionType {
+        Self.type(isTransfer: isTransfer, isInflow: isInflow)
+    }
+
+    nonisolated static func type(isTransfer: Bool, isInflow: Bool) -> TransactionType {
+        if isTransfer {
+            return .transfer
+        }
+        return isInflow ? .income : .expense
+    }
+
+    /// The accounts a transfer is written between, source then destination.
+    /// Money out of this account goes to the partner; money in comes from it.
+    /// Converting an existing row keeps that row on its own side, whatever the
+    /// sign, since the store reads its direction off the original.
+    nonisolated static func transferEnds(
+        accountId: String,
+        partnerId: String,
+        isInflow: Bool,
+        keepsOwnSide: Bool
+    ) -> (from: String, to: String) {
+        keepsOwnSide || !isInflow ? (accountId, partnerId) : (partnerId, accountId)
+    }
+
+    /// The account and transfer account the save path gets: a transfer's
+    /// accounts in source/destination order, or the account alone.
+    private var formAccounts: (accountId: String, transferToAccountId: String?) {
+        guard isTransfer, let partner = transferToAccountId else {
+            return (selectedAccountId, transferToAccountId)
+        }
+        let ends = Self.transferEnds(
+            accountId: selectedAccountId,
+            partnerId: partner,
+            isInflow: isInflow,
+            keepsOwnSide: isConvertingToTransfer
+        )
+        return (ends.from, ends.to)
     }
 
     private var isEditingSplitParent: Bool {
@@ -208,18 +241,14 @@ struct AddTransactionView: View {
         func takes(leg: String?, partner: String?) -> Bool {
             BudgetStore.transferLegTakesCategory(leg: leg, partner: partner, offBudgetAccountIds: offBudgetIds)
         }
-        guard let editing else {
+        guard editing != nil else {
             // `createTransfer` puts it on whichever leg is on-budget.
             return takes(leg: selectedAccountId, partner: transferToAccountId)
                 || takes(leg: transferToAccountId, partner: selectedAccountId)
         }
-        // An edit writes the form's category to the opened row alone. That
-        // row's account is the one in the account picker, except on an
-        // existing transfer opened from its receiving leg — there the form
-        // shows the pair as From/To and the opened row is To.
-        return editing.transferId != nil && editing.amount >= 0
-            ? takes(leg: transferToAccountId, partner: selectedAccountId)
-            : takes(leg: selectedAccountId, partner: transferToAccountId)
+        // An edit writes the form's category to the opened row alone, and the
+        // opened row's account is the form's account.
+        return takes(leg: selectedAccountId, partner: transferToAccountId)
     }
 
     /// Whether the single-category row belongs on the form. A hidden pick is
@@ -244,8 +273,7 @@ struct AddTransactionView: View {
     /// Transfers are excluded — they pair two accounts through `transferId`
     /// and splitting would orphan the partner leg (the store refuses it), so
     /// the button stays hidden rather than failing on save. Gated on the live
-    /// type toggle, which also covers a saved transfer (its type is locked to
-    /// Transfer), so switching a new transaction to Transfer hides it (GH #556).
+    /// transfer state, so choosing an account as the payee hides it (GH #556).
     private var canSplitIntoCategories: Bool {
         Self.canSplitIntoCategories(
             isTransfer: isTransfer,
@@ -294,32 +322,12 @@ struct AddTransactionView: View {
         budgetStore.accounts.first { $0.id == selectedAccountId }?.offBudget != true
     }
 
-    /// Converting keeps the edited row on its own side of the transfer, so
-    /// the form asks for one account — the other one — instead of the From/To
-    /// pair a new transfer needs. The account row stays editable and keeps
-    /// its usual label: moving a transaction between accounts is an ordinary
-    /// edit, and converting doesn't take that away.
-    private var accountPickerLabel: String {
-        isTransfer && !isConvertingToTransfer
-            ? String(localized: AddTransactionLocalization.from, locale: locale)
-            : String(localized: AddTransactionLocalization.account, locale: locale)
-    }
-
-    private var transferPartnerLabel: String {
-        guard isConvertingToTransfer else {
-            return String(localized: AddTransactionLocalization.to, locale: locale)
-        }
-        return (editing?.amount ?? 0) < 0
-            ? String(localized: AddTransactionLocalization.transferTo, locale: locale)
-            : String(localized: AddTransactionLocalization.transferFrom, locale: locale)
-    }
-
     private var transferEligibleAccounts: [Account] {
         orderedOpenAccounts.filter { $0.id != selectedAccountId }
     }
 
     /// Whether the payee list may offer accounts as transfers: the same cases
-    /// the Transfer type is offered in. A pending import, a split in progress
+    /// that can save a transfer. A pending import, a split in progress
     /// and an edit that couldn't become a transfer can't take one.
     private var offersTransfer: Bool {
         Self.offersTransfer(
@@ -327,6 +335,7 @@ struct AddTransactionView: View {
             isSplitting: isSplitting,
             isEditingSplitParent: isEditingSplitParent,
             isEditing: isEditing,
+            isEditingTransfer: isEditingTransfer,
             canConvertToTransfer: canConvertToTransfer
         )
     }
@@ -336,36 +345,35 @@ struct AddTransactionView: View {
         isSplitting: Bool,
         isEditingSplitParent: Bool,
         isEditing: Bool,
+        isEditingTransfer: Bool = false,
         canConvertToTransfer: Bool
     ) -> Bool {
         !isPendingImportReview && !isSplitting && !isEditingSplitParent
-            && (!isEditing || canConvertToTransfer)
+            && (!isEditing || isEditingTransfer || canConvertToTransfer)
     }
 
     /// Choosing an account in the payee list makes this a transfer between the
     /// form's account and that one.
     private func selectTransferAccount(_ account: Account) {
-        let selection = Self.transferAccountSelection(
-            accountId: selectedAccountId, otherAccountId: account.id,
-            type: txType, isEditing: isEditing
-        )
-        transferToAccountId = selection.partnerAccountId
-        selectedAccountId = selection.accountId
-        txType = .transfer
+        transferToAccountId = account.id
+        // Converting a row to a transfer keeps the row on its own side, so the
+        // sign goes back to the row's.
+        if let editing, canConvertToTransfer {
+            isInflow = editing.amount >= 0
+        }
         showPayeePicker = false
     }
 
-    nonisolated static func transferAccountSelection(
-        accountId: String,
-        otherAccountId: String,
-        type: TransactionType,
-        isEditing: Bool
-    ) -> (accountId: String, partnerAccountId: String) {
-        // New transfers use From/To; conversion keeps the edited row's own
-        // account and lets the store preserve its original amount's sign.
-        type == .income && !isEditing
-            ? (otherAccountId, accountId)
-            : (accountId, otherAccountId)
+    /// The payee row's text: the other account for a transfer, with the
+    /// direction the sign gives it.
+    private var transferPayeeText: String {
+        guard let partner = budgetStore.accounts.first(where: { $0.id == transferToAccountId })?.name else {
+            return String(localized: "Select account", locale: locale)
+        }
+        let direction = isInflow
+            ? String(localized: AddTransactionLocalization.transferFrom, locale: locale)
+            : String(localized: AddTransactionLocalization.transferTo, locale: locale)
+        return "\(direction): \(partner)"
     }
 
     private func matchingPayee(for name: String) -> Payee? {
@@ -484,24 +492,6 @@ struct AddTransactionView: View {
         NavigationStack {
             Form {
                 Section {
-                    // Full-bleed: zeroed row insets let the segmented control
-                    // span the row edge to edge instead of negative padding
-                    // that assumes the default 16pt inset.
-                    Picker("Type", selection: $txType) {
-                        Text("Expense").tag(TransactionType.expense)
-                        Text("Income").tag(TransactionType.income)
-                        if !isPendingImportReview, !isEditing || isEditingTransfer || canConvertToTransfer {
-                            Text("Transfer").tag(TransactionType.transfer)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 8, trailing: 0))
-                    // A split parent's sign is the children's; flipping
-                    // it would have to flip every line, so it stays fixed.
-                    // A transfer stays a transfer: converting one back
-                    // would orphan the partner leg (the store refuses it).
-                    .disabled(isEditingSplitParent || isEditingTransfer)
-
                     // The amount is the first thing entered in a fresh form,
                     // so the add flow opens with the keyboard ready. Edits and
                     // prefilled amounts already have one and start with the
@@ -509,17 +499,31 @@ struct AddTransactionView: View {
                     // the sign hugs it; an equal spacer on the far side keeps
                     // the amount itself on the row's center line.
                     HStack(alignment: .center, spacing: 12) {
-                        Text(amountSignSymbol)
-                            .font(.title2.weight(.semibold))
-                            .foregroundStyle(amountSignColor)
-                            .frame(width: amountSignWidth, alignment: .trailing)
+                        // Tapping the sign flips it, like the keyboard's ± key.
+                        Button {
+                            toggleDirection()
+                        } label: {
+                            Text(amountSignSymbol)
+                                .font(.title2.weight(.semibold))
+                                .foregroundStyle(amountSignColor)
+                                .frame(width: amountSignWidth, alignment: .trailing)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!canToggleDirection)
+                        .accessibilityLabel("Amount sign")
+                        .accessibilityValue(amountSignDescription)
+                        .accessibilityHint("Switches between expense and income, or reverses a transfer")
+                        .accessibilityIdentifier("addTransaction.sign")
                         AmountInputField(
                             text: $amount,
                             conventionalAmountEntry: budgetStore.conventionalAmountEntry,
                             alignment: .center,
                             textStyle: .extraLargeTitle,
                             weight: .bold,
-                            autofocus: autofocusAmount ?? (!isEditing && amount.isEmpty)
+                            autofocus: autofocusAmount ?? (!isEditing && amount.isEmpty),
+                            onToggleSign: { toggleDirection() },
+                            signToggleEnabled: canToggleDirection
                         )
                         .fixedSize(horizontal: true, vertical: false)
                         .frame(minWidth: amountMinWidth)
@@ -534,71 +538,76 @@ struct AddTransactionView: View {
                 .listRowSeparator(.hidden, edges: .all)
 
                 Section {
-                    Picker(accountPickerLabel, selection: $selectedAccountId) {
+                    Picker(String(localized: AddTransactionLocalization.account, locale: locale), selection: $selectedAccountId) {
                         ForEach(orderedOpenAccounts) { account in
                             Text(account.name).tag(account.id)
                         }
                     }
-                    .onChange(of: selectedAccountId) { _, newValue in
+                    .accessibilityIdentifier("addTransaction.account")
+                    .onChange(of: selectedAccountId) { oldValue, newValue in
                         if transferToAccountId == newValue {
-                            transferToAccountId = nil
+                            // Keep the pair when the partner becomes the form's account.
+                            transferToAccountId = oldValue
                         }
                     }
 
-                    if isTransfer {
-                        Picker(transferPartnerLabel, selection: $transferToAccountId) {
-                            Text("Select account").tag(String?.none)
-                            ForEach(transferEligibleAccounts) { account in
-                                Text(account.name).tag(String?.some(account.id))
-                            }
-                        }
-                    }
-
-                    if !isTransfer {
-                        Button {
-                            loadNearbyPayees()
-                            dismissKeyboard()
-                            showPayeePicker = true
-                        } label: {
-                            HStack {
-                                Text("Payee")
-                                    .foregroundStyle(.secondary)
-                                Spacer()
-                                if !payeeName.isEmpty {
-                                    Text(payeeName)
-                                        .foregroundStyle(.primary)
+                    Button {
+                        loadNearbyPayees()
+                        dismissKeyboard()
+                        showPayeePicker = true
+                    } label: {
+                        HStack {
+                            Text("Payee")
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            if isTransfer {
+                                Label {
+                                    Text(transferPayeeText)
+                                } icon: {
+                                    Image(systemName: "arrow.left.arrow.right")
                                 }
+                                .foregroundStyle(.blue)
+                            } else if !payeeName.isEmpty {
+                                Text(payeeName)
+                                    .foregroundStyle(.primary)
                             }
-                            .contentShape(Rectangle()) // Ensures the whole row is tappable
                         }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("addTransaction.payee")
-                        .sheet(isPresented: $showPayeePicker) {
-                            PayeePickerView(
-                                payeeName: payeeName,
-                                nearbyPayees: $nearbyPayees,
-                                transferAccounts: offersTransfer ? transferEligibleAccounts : [],
-                                onSelectAccount: { account in
-                                    selectTransferAccount(account)
-                                },
-                                onSelect: { payee in
-                                    payeeName = payee.name
+                        .contentShape(Rectangle()) // Ensures the whole row is tappable
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("addTransaction.payee")
+                    .sheet(isPresented: $showPayeePicker) {
+                        PayeePickerView(
+                            payeeName: isTransfer ? "" : payeeName,
+                            nearbyPayees: $nearbyPayees,
+                            transferAccounts: offersTransfer ? transferEligibleAccounts : [],
+                            accountsOnly: isEditingTransfer,
+                            onSelectAccount: { account in
+                                selectTransferAccount(account)
+                            },
+                            onSelect: { payee in
+                                transferToAccountId = nil
+                                payeeName = payee.name
+                                applyEditCategoryFromHistory(payeeId: payee.id)
+                                showPayeePicker = false
+                            },
+                            onCommit: { name in
+                                guard !isTransfer || !name.isEmpty else {
+                                    showPayeePicker = false
+                                    return
+                                }
+                                transferToAccountId = nil
+                                payeeName = name
+                                if let payee = matchingPayee(for: name) {
                                     applyEditCategoryFromHistory(payeeId: payee.id)
-                                    showPayeePicker = false
-                                },
-                                onCommit: { name in
-                                    payeeName = name
-                                    if let payee = matchingPayee(for: name) {
-                                        applyEditCategoryFromHistory(payeeId: payee.id)
-                                    }
-                                    showPayeePicker = false
-                                },
-                                onDeleteNearby: { nearby in
-                                    deleteNearbySuggestion(nearby)
                                 }
-                            )
-                            .environmentObject(budgetStore)
-                        }
+                                showPayeePicker = false
+                            },
+                            onDeleteNearby: { nearby in
+                                deleteNearbySuggestion(nearby)
+                            }
+                        )
+                        .environmentObject(budgetStore)
                     }
 
                     if isEditingSplitParent, !isSplitting, !unsplitRequested {
@@ -896,12 +905,59 @@ struct AddTransactionView: View {
         }
     }
 
-    private var amountSignSymbol: String {
+    /// The sign is the direction, as in Actual. A split parent's sign is its
+    /// lines', and an existing transfer's direction is fixed by its two legs,
+    /// so neither flips; converting a row to a transfer keeps its own side.
+    private var canToggleDirection: Bool {
+        Self.canToggleDirection(
+            isEditingSplitParent: isEditingSplitParent,
+            isEditingTransfer: isEditingTransfer,
+            isConvertingToTransfer: isConvertingToTransfer,
+            isTransfer: isTransfer,
+            hasTransferPartner: transferToAccountId != nil
+        )
+    }
+
+    nonisolated static func canToggleDirection(
+        isEditingSplitParent: Bool,
+        isEditingTransfer: Bool,
+        isConvertingToTransfer: Bool,
+        isTransfer: Bool,
+        hasTransferPartner: Bool
+    ) -> Bool {
+        !isEditingSplitParent && !isEditingTransfer && !isConvertingToTransfer
+            && (!isTransfer || hasTransferPartner)
+    }
+
+    /// Flip the amount's sign: expense and income swap, and a transfer
+    /// reverses, as in Actual.
+    private func toggleDirection() {
+        guard canToggleDirection else { return }
+        isInflow.toggle()
+    }
+
+    private var amountSignDescription: String {
         switch txType {
-        case .expense: "-"
-        case .income: "+"
-        case .transfer: "→"
+        case .expense: return String(localized: AddTransactionLocalization.outflow, locale: locale)
+        case .income: return String(localized: AddTransactionLocalization.inflow, locale: locale)
+        case .transfer:
+            let ownAccount = budgetStore.accounts.first { $0.id == selectedAccountId }?.name
+            let partnerAccount = budgetStore.accounts.first { $0.id == transferToAccountId }?.name
+            return Self.transferDirectionDescription(
+                from: isInflow ? partnerAccount : ownAccount,
+                to: isInflow ? ownAccount : partnerAccount,
+                locale: locale
+            )
         }
+    }
+
+    nonisolated static func transferDirectionDescription(from source: String?, to destination: String?, locale: Locale) -> String {
+        guard let source, let destination else { return String(localized: "Transfer", locale: locale) }
+        return String(localized: "Transfer from \(source) to \(destination)", locale: locale)
+    }
+
+    private var amountSignSymbol: String {
+        isInflow ? "+" : "-"
     }
 
     private var amountSignColor: Color {
@@ -970,7 +1026,7 @@ struct AddTransactionView: View {
                 // next entry and route to the saved transaction's account
                 // list so every add flow lands on the relevant list.
                 resetForm()
-                NotificationRouter.shared.pendingAccountNavigation = form.accountId
+                NotificationRouter.shared.pendingAccountNavigation = selectedAccountId
             }
         } catch {
             errorMessage = PendingImportApprover.localizedErrorMessage(
@@ -981,11 +1037,11 @@ struct AddTransactionView: View {
 
     private func currentForm() -> BudgetStore.TransactionForm {
         BudgetStore.TransactionForm(
-            accountId: selectedAccountId,
+            accountId: formAccounts.accountId,
             type: txType,
             amount: amount,
             payeeName: payeeName,
-            transferToAccountId: transferToAccountId,
+            transferToAccountId: formAccounts.transferToAccountId,
             categoryId: selectedCategoryId,
             notes: notes,
             date: date,
@@ -1001,7 +1057,7 @@ struct AddTransactionView: View {
 
     private func resetForm() {
         amount = ""
-        txType = .expense
+        isInflow = false
         payeeName = ""
         transferToAccountId = nil
         selectedCategoryId = nil
@@ -1222,7 +1278,7 @@ private struct SplitLineRow: View {
 ///
 /// With `allowsNegative`, a ± button joins the keyboard toolbar and flips the
 /// text's own sign. With `onToggleSign`, the same button appears but the sign
-/// lives outside the field (a split line's direction flip) and the text stays unsigned.
+/// lives outside the field (a transaction or split line's direction) and the text stays unsigned.
 /// Neither set means sign is handled elsewhere entirely (e.g. the expense/income toggle).
 ///
 /// `textStyle` picks the Dynamic Type text style the font scales from.
@@ -1250,6 +1306,8 @@ struct AmountInputField: UIViewRepresentable {
     /// Shows the ± toolbar button and delegates it here instead of signing
     /// the text — for callers whose sign is separate state.
     var onToggleSign: (() -> Void)?
+    /// Keep the key in the toolbar while the form's direction rules change.
+    var signToggleEnabled = true
 
     /// becomeFirstResponder is a no-op until the view joins a window, and
     /// during a sheet presentation that happens well after makeUIView —
@@ -1305,20 +1363,21 @@ struct AmountInputField: UIViewRepresentable {
         if allowsNegative || onToggleSign != nil {
             // The decimal pad has no minus key, so this button is the only
             // keyboard affordance for flipping an amount's sign.
-            items.append(UIBarButtonItem(
-                image: UIImage(systemName: "plus.forwardslash.minus"),
-                style: .plain,
+            let item = Self.keyItem(
+                symbol: "plus.forwardslash.minus",
+                label: String(localized: "Flip sign"),
                 target: context.coordinator, action: #selector(Coordinator.toggleSign)
-            ))
+            )
+            context.coordinator.signButton = item.customView as? UIButton
+            context.coordinator.signButton?.isEnabled = signToggleEnabled
+            items.append(item)
         }
         for op in Coordinator.Operator.allCases {
-            let item = UIBarButtonItem(
-                image: UIImage(systemName: op.symbolName),
-                style: .plain,
+            items.append(Self.keyItem(
+                symbol: op.symbolName,
+                label: op.accessibilityLabel,
                 target: context.coordinator, action: op.selector
-            )
-            item.accessibilityLabel = op.accessibilityLabel
-            items.append(item)
+            ))
         }
         items.append(UIBarButtonItem(barButtonSystemItem: .flexibleSpace, target: nil, action: nil))
         // `.prominent` is iOS 26+; `.done` is the pre-26 equivalent emphasis.
@@ -1352,11 +1411,26 @@ struct AmountInputField: UIViewRepresentable {
         return field
     }
 
+    /// A keyboard-bar key drawn as a symbol. A bar item's own
+    /// `accessibilityLabel` and `title` are ignored inside the keyboard's
+    /// accessory view (the key is announced by its symbol's name, "add",
+    /// "remove"), so the key is a button view that carries the label.
+    private static func keyItem(symbol: String, label: String, target: AnyObject?, action: Selector) -> UIBarButtonItem {
+        var configuration = UIButton.Configuration.plain()
+        configuration.image = UIImage(systemName: symbol)
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 10, bottom: 8, trailing: 10)
+        let button = UIButton(configuration: configuration)
+        button.addTarget(target, action: action, for: .touchUpInside)
+        button.accessibilityLabel = label
+        return UIBarButtonItem(customView: button)
+    }
+
     func updateUIView(_ uiView: UITextField, context: Context) {
         (uiView as? AutofocusTextField)?.updateAutofocus(autofocus)
         let formatChanged = context.coordinator.numberFormat != budgetStore.numberFormat
         context.coordinator.numberFormat = budgetStore.numberFormat
         context.coordinator.parent = self
+        context.coordinator.signButton?.isEnabled = signToggleEnabled
 
         if formatChanged {
             uiView.placeholder = budgetStore.numberFormat.format(
@@ -1428,6 +1502,7 @@ struct AmountInputField: UIViewRepresentable {
 
         var parent: AmountInputField
         weak var textField: UITextField?
+        weak var signButton: UIButton?
         /// The last value written to the binding, so `updateUIView` can tell
         /// an outside change from the field's own echo.
         private(set) var lastPublishedText: String?
@@ -1534,6 +1609,7 @@ struct AmountInputField: UIViewRepresentable {
         }
 
         @objc func toggleSign() {
+            guard parent.signToggleEnabled else { return }
             // Delegated sign lives outside the text (a split line's flip);
             // the field's own text stays unsigned.
             if let onToggleSign = parent.onToggleSign {
@@ -1790,14 +1866,12 @@ private enum AddTransactionLocalization {
     static let addTransfer: String.LocalizationValue = "Add Transfer"
     static let category: String.LocalizationValue = "Category"
     static let flipsDirection: String.LocalizationValue = "Flips this line's direction"
-    static let from: String.LocalizationValue = "From"
     static let inflow: String.LocalizationValue = "Inflow"
     static let none: String.LocalizationValue = "None"
     static let optionalNotes: String.LocalizationValue = "Notes (optional)"
     static let optionalPayee: String.LocalizationValue = "Payee (optional)"
     static let outflow: String.LocalizationValue = "Outflow"
     static let saveChanges: String.LocalizationValue = "Save Changes"
-    static let to: String.LocalizationValue = "To"
     static let transferFrom: String.LocalizationValue = "Transfer from"
     static let transferTo: String.LocalizationValue = "Transfer to"
 }

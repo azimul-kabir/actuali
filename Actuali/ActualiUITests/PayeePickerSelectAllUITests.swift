@@ -5,6 +5,38 @@ import XCTest
 /// be selected so the first keystroke replaces it instead of appending to it.
 final class PayeePickerSelectAllUITests: XCTestCase {
     @MainActor
+    func testTransfersFollowSuggestedPayeesAndPrecedeAllPayees() {
+        let app = XCUIApplication()
+        app.launchArguments = ["-loadDemoData", "-initialTab", "2"]
+        app.launch()
+
+        let payeeRow = app.buttons["addTransaction.payee"]
+        XCTAssertTrue(payeeRow.waitForExistence(timeout: 10))
+        payeeRow.tap()
+        let suggestions = app.staticTexts.matching(NSPredicate(format: "label ==[c] %@", "Suggested Payees")).firstMatch
+        XCTAssertTrue(suggestions.waitForExistence(timeout: 5))
+
+        // Demo data has no nearby locations. Collect headers while scrolling
+        // so this also works when the keyboard hides the later sections.
+        let headers = app.staticTexts.matching(NSCompoundPredicate(orPredicateWithSubpredicates:
+            ["Suggested Payees", "Transfer to / from", "Payees"].map {
+                NSPredicate(format: "label ==[c] %@", $0)
+            }))
+        var seen: [String] = []
+        for _ in 0..<8 {
+            for header in headers.allElementsBoundByIndex where !seen.contains(header.label.lowercased()) {
+                seen.append(header.label.lowercased())
+            }
+            if seen.contains("payees") {
+                break
+            }
+            app.swipeUp()
+        }
+
+        XCTAssertEqual(seen, ["suggested payees", "transfer to / from", "payees"])
+    }
+
+    @MainActor
     func testTypingReplacesPrefilledPayeeName() {
         let app = XCUIApplication()
         app.launchArguments = ["-loadDemoData", "-initialTab", "2"]
