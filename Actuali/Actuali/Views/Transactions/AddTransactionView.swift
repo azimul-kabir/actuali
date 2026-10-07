@@ -22,7 +22,7 @@ struct AddTransactionView: View {
     /// Width of the sign glyph beside the amount, scaled with the glyph's own
     /// text style so it never clips at accessibility sizes. The same width is
     /// reserved on the opposite side so the amount itself stays centered.
-    @ScaledMetric(relativeTo: .title2) private var amountSignWidth: CGFloat = 24
+    @ScaledMetric(relativeTo: .title2) private var amountSignWidth: CGFloat = 40
     /// Floor for the content-sized amount field: keeps an empty field wide
     /// enough to stay tappable and keep its placeholder visible at every
     /// text size.
@@ -273,7 +273,8 @@ struct AddTransactionView: View {
     /// Transfers are excluded — they pair two accounts through `transferId`
     /// and splitting would orphan the partner leg (the store refuses it), so
     /// the button stays hidden rather than failing on save. Gated on the live
-    /// transfer state, so choosing an account as the payee hides it (GH #556).
+    /// payee, which also covers a saved transfer, so choosing an account as a
+    /// new transaction's payee hides it (GH #556).
     private var canSplitIntoCategories: Bool {
         Self.canSplitIntoCategories(
             isTransfer: isTransfer,
@@ -326,9 +327,9 @@ struct AddTransactionView: View {
         orderedOpenAccounts.filter { $0.id != selectedAccountId }
     }
 
-    /// Whether the payee list may offer accounts as transfers: the same cases
-    /// that can save a transfer. A pending import, a split in progress
-    /// and an edit that couldn't become a transfer can't take one.
+    /// Whether the payee list may offer accounts as transfers. A pending
+    /// import, a split in progress and an edit that couldn't become a
+    /// transfer (a split parent or child) can't take one.
     private var offersTransfer: Bool {
         Self.offersTransfer(
             isPendingImportReview: isPendingImportReview,
@@ -473,7 +474,7 @@ struct AddTransactionView: View {
             showCategoryPicker = true
         } label: {
             HStack {
-                Text("Category")
+                Label("Category", systemImage: "tag")
                 Spacer()
                 Text(selectedCategoryName)
                     .foregroundStyle(.secondary)
@@ -486,6 +487,52 @@ struct AddTransactionView: View {
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("addTransaction.category")
+    }
+
+    /// Whether the category card is on screen: the single category row, the
+    /// placeholder over an existing split's lines, or the split lines
+    /// themselves. A transfer between on-budget accounts has none.
+    private var showsCategorySection: Bool {
+        isEditingSplitParent || showsCategoryRow || showsSplitEntry
+    }
+
+    @ViewBuilder
+    private var categoryRows: some View {
+        if isEditingSplitParent, !isSplitting, !unsplitRequested {
+            // Placeholder while the children load into the
+            // editable split lines below.
+            HStack {
+                Label("Category", systemImage: "tag")
+                Spacer()
+                Text("Split")
+                    .foregroundStyle(.secondary)
+            }
+        } else if showsCategoryRow, !isSplitting {
+            categoryRow
+            if canSplitIntoCategories, !isPendingImportReview {
+                Button {
+                    startSplit()
+                } label: {
+                    Label("Split into multiple categories", systemImage: "arrow.triangle.branch")
+                }
+            }
+        }
+
+        // Split lines grow the same pill in place, right where the
+        // category row was, instead of opening a section of their own.
+        if showsSplitEntry {
+            splitEntryRows
+            // Right under the lines it counts, so a disabled Save
+            // button is never a mystery.
+            if let remaining = splitRemainingCents, remaining != 0 {
+                Text("\(budgetStore.formatCurrency(remaining)) left to assign")
+                    .foregroundStyle(.red)
+            } else if splitRemainingCents == 0, hasBlankSplitLine {
+                // Nothing left to assign but a line is still blank.
+                Text("Fill in or remove the empty line")
+                    .foregroundStyle(.red)
+            }
+        }
     }
 
     var body: some View {
@@ -504,10 +551,11 @@ struct AddTransactionView: View {
                             toggleDirection()
                         } label: {
                             Text(amountSignSymbol)
-                                .font(.title2.weight(.semibold))
+                                .font(.title2.weight(.bold))
                                 .foregroundStyle(amountSignColor)
-                                .frame(width: amountSignWidth, alignment: .trailing)
-                                .contentShape(Rectangle())
+                                .frame(width: amountSignWidth, height: amountSignWidth)
+                                .background(amountSignColor.opacity(0.14), in: Circle())
+                                .contentShape(Circle())
                         }
                         .buttonStyle(.plain)
                         .disabled(!canToggleDirection)
@@ -538,10 +586,12 @@ struct AddTransactionView: View {
                 .listRowSeparator(.hidden, edges: .all)
 
                 Section {
-                    Picker(String(localized: AddTransactionLocalization.account, locale: locale), selection: $selectedAccountId) {
+                    Picker(selection: $selectedAccountId) {
                         ForEach(orderedOpenAccounts) { account in
                             Text(account.name).tag(account.id)
                         }
+                    } label: {
+                        Label(String(localized: AddTransactionLocalization.account, locale: locale), systemImage: "building.columns")
                     }
                     .accessibilityIdentifier("addTransaction.account")
                     .onChange(of: selectedAccountId) { oldValue, newValue in
@@ -557,7 +607,7 @@ struct AddTransactionView: View {
                         showPayeePicker = true
                     } label: {
                         HStack {
-                            Text("Payee")
+                            Label("Payee", systemImage: "person")
                                 .foregroundStyle(.secondary)
                             Spacer()
                             if isTransfer {
@@ -609,65 +659,51 @@ struct AddTransactionView: View {
                         )
                         .environmentObject(budgetStore)
                     }
+                }
 
-                    if isEditingSplitParent, !isSplitting, !unsplitRequested {
-                        // Placeholder while the children load into the
-                        // editable split lines below.
-                        HStack {
-                            Text("Category")
-                            Spacer()
-                            Text("Split")
-                                .foregroundStyle(.secondary)
-                        }
-                    } else if showsCategoryRow, !isSplitting {
-                        categoryRow
-                        if canSplitIntoCategories, !isPendingImportReview {
-                            Button {
-                                startSplit()
-                            } label: {
-                                Label("Split into multiple categories", systemImage: "arrow.triangle.branch")
-                            }
-                        }
+                if showsCategorySection {
+                    Section {
+                        categoryRows
                     }
+                }
 
-                    // Split lines grow the same pill in place, right where the
-                    // category row was, instead of opening a section of their own.
-                    if showsSplitEntry {
-                        splitEntryRows
-                        // Right under the lines it counts, so a disabled Save
-                        // button is never a mystery.
-                        if let remaining = splitRemainingCents, remaining != 0 {
-                            Text("\(budgetStore.formatCurrency(remaining)) left to assign")
-                                .foregroundStyle(.red)
-                        } else if splitRemainingCents == 0, hasBlankSplitLine {
-                            // Nothing left to assign but a line is still blank.
-                            Text("Fill in or remove the empty line")
-                                .foregroundStyle(.red)
-                        }
+                Section {
+                    DatePicker(selection: $date, displayedComponents: .date) {
+                        Label("Date", systemImage: "calendar")
                     }
-
-                    DatePicker("Date", selection: $date, displayedComponents: .date)
-
-                    // One line while the note is short — an empty three-line
-                    // box only pushes Cleared and the save button off screen —
-                    // growing as the text needs it, up to six.
-                    TextField("Notes", text: $notes, axis: .vertical)
-                        .lineLimit(1...6)
-                    TagSuggestionBar(text: $notes, availableTags: budgetStore.tags)
-                    // Links in the note stay openable while the text is a
-                    // TextField (GH #190) — this form doubles as the only
-                    // full view of a transaction's note.
-                    NoteLinkRows(text: notes).equatable()
-
-                    Toggle("Cleared", isOn: $cleared)
+                    Toggle(isOn: $cleared) {
+                        Label("Cleared", systemImage: "checkmark.circle")
+                    }
                     // Only the paths that record locations (adds and split
                     // edits) get the per-save opt-out; standard edits never
                     // record, so the toggle would be a no-op there.
                     if !isEditing || isEditingSplitParent, !isTransfer,
                        budgetStore.payeeLocationWritesEnabled,
                        budgetStore.recordPayeeLocations {
-                        Toggle("Save Location", isOn: $saveLocation)
+                        Toggle(isOn: $saveLocation) {
+                            Label("Save Location", systemImage: "location")
+                        }
                     }
+                }
+
+                Section {
+                    // One line while the note is short — an empty three-line
+                    // box only pushes the save button off screen —
+                    // growing as the text needs it, up to six.
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(systemName: "note.text")
+                            .foregroundStyle(.secondary)
+                            .padding(.top, 2)
+                            .accessibilityHidden(true)
+                        TextField("Notes", text: $notes, axis: .vertical)
+                            .lineLimit(1...6)
+                            .accessibilityIdentifier("addTransaction.notes")
+                    }
+                    TagSuggestionBar(text: $notes, availableTags: budgetStore.tags)
+                    // Links in the note stay openable while the text is a
+                    // TextField (GH #190) — this form doubles as the only
+                    // full view of a transaction's note.
+                    NoteLinkRows(text: notes)
                 }
 
                 if let error = errorMessage {
@@ -1247,8 +1283,9 @@ private struct SplitLineRow: View {
             }
             TextField(String(localized: AddTransactionLocalization.optionalNotes, locale: locale), text: $line.notes)
                 .font(.subheadline)
+                .accessibilityIdentifier("addTransaction.splitLine.notes")
             TagSuggestionBar(text: $line.notes, availableTags: budgetStore.tags)
-            NoteLinkRows(text: line.notes).equatable()
+            NoteLinkRows(text: line.notes)
                 .font(.subheadline)
         }
         .sheet(isPresented: $showCategoryPicker) {
