@@ -439,6 +439,11 @@ final class BudgetStore: ObservableObject {
     /// URL so offline launches keep the last known answer.
     @Published private(set) var payeeLocationWritesEnabled = false
 
+    /// Whether we may WRITE account_groups / accounts.account_group_id CRDT
+    /// messages (server >= 26.9.0). Probed and persisted like
+    /// `payeeLocationWritesEnabled`.
+    @Published private(set) var accountGroupWritesEnabled = false
+
     /// Synced credit card configurations loaded from the preferences table (accountId -> CreditCardConfig).
     @Published var creditCardConfigs: [String: CreditCardConfig] = [:]
 
@@ -849,6 +854,15 @@ final class BudgetStore: ObservableObject {
     @Published var conventionalAmountEntry: Bool = false {
         didSet {
             UserDefaults.standard.set(conventionalAmountEntry, forKey: "conventionalAmountEntry")
+        }
+    }
+
+    /// Whether a new transaction with no chosen category takes the category of
+    /// the payee's most recent transaction. Persisted to UserDefaults,
+    /// defaults to on. Rules still run after the pick.
+    @Published var suggestCategoryFromPayeeHistory: Bool = true {
+        didSet {
+            UserDefaults.standard.set(suggestCategoryFromPayeeHistory, forKey: "suggestCategoryFromPayeeHistory")
         }
     }
 
@@ -1682,6 +1696,13 @@ final class BudgetStore: ObservableObject {
         }
     }
 
+    /// The payee's most recent category, or nil when the user turned the
+    /// payee-history pick off. Every history pick goes through here.
+    func payeeHistoryCategoryId(forPayeeId payeeId: String) async throws -> String? {
+        guard suggestCategoryFromPayeeHistory, let database else { return nil }
+        return try await database.mostRecentCategoryId(forPayeeId: payeeId)
+    }
+
     /// `id` if that category still exists, else nil — so a category deleted
     /// since a shortcut was configured is dropped instead of written as a
     /// dangling id.
@@ -1795,6 +1816,11 @@ final class BudgetStore: ObservableObject {
         self.database = database
         self.syncClient = syncClient
         subscribeToSyncState()
+    }
+
+    /// Test-only: stand in for a `GET /info` probe of a server >= 26.9.0.
+    func setAccountGroupWritesEnabledForTesting(_ enabled: Bool) {
+        accountGroupWritesEnabled = enabled
     }
 
     /// Test-only: install an already-completed load task that produced no
@@ -1974,6 +2000,9 @@ final class BudgetStore: ObservableObject {
         )
         _conventionalAmountEntry = Published(
             initialValue: persistedBool("conventionalAmountEntry", default: false)
+        )
+        _suggestCategoryFromPayeeHistory = Published(
+            initialValue: persistedBool("suggestCategoryFromPayeeHistory", default: true)
         )
         _hideBalances = Published(
             initialValue: persistedBool("hideBalances", default: false)
@@ -2198,7 +2227,7 @@ final class BudgetStore: ObservableObject {
             )
             serverURL = normalized
             fallbackServerURL = normalizedFallback
-            refreshPayeeLocationSupport()
+            refreshServerCapabilities()
             return true
         } catch {
             self.error = error.localizedDescription
@@ -2270,6 +2299,34 @@ final class BudgetStore: ObservableObject {
             availableLoginMethods = Self.passwordOnlyLoginMethods
         }
         // Only relevant when OpenID is offered; cheap enough to always refresh.
+        if supportsOpenIDLogin {
+            ownerExists = await serverClient.fetchOwnerCreated()
+        }
+    }
+
+    /// Quiet login-methods probe for the URL still being typed on the connect
+    /// screen, so OpenID is offered before any password attempt — upstream
+    /// fetches login methods as soon as the server URL is set. Leaves the
+    /// field's text alone and stays quiet on failure: Connect re-probes through
+    /// `checkLoginMethods()` and reports what's wrong.
+    func discoverLoginMethods() async {
+        let probedURL = serverURL
+        let normalized = Self.normalizedServerURL(probedURL)
+        guard !isConnected, Self.isValidServerURL(normalized) else { return }
+        await applyCustomHeadersToClientNow()
+        // Same configuration connect() applies, so a probe that lands after
+        // Connect can't drop the fallback from the live client.
+        try? await serverClient.configure(
+            serverURL: normalized,
+            fallbackServerURL: Self.normalizedServerURL(fallbackServerURL)
+        )
+        let methods = try? await serverClient.fetchLoginMethods()
+        // The user kept typing or connected meanwhile; this answer is stale.
+        guard serverURL == probedURL, !isConnected else { return }
+        // A failed probe says nothing about the server, so keep what the last
+        // successful probe found rather than hiding a working OpenID button.
+        guard let methods else { return }
+        availableLoginMethods = methods
         if supportsOpenIDLogin {
             ownerExists = await serverClient.fetchOwnerCreated()
         }
@@ -2958,7 +3015,7 @@ final class BudgetStore: ObservableObject {
                 }
             }
 
-            refreshPayeeLocationSupport()
+            refreshServerCapabilities()
             await scheduleCreditCardDueNotifications()
 
         } catch {
@@ -2991,14 +3048,16 @@ final class BudgetStore: ObservableObject {
         isLoading = false
     }
 
-    /// Seed `payeeLocationWritesEnabled` from the last cached answer for the
+    /// Seed the version-gated write flags from the last cached answer for the
     /// configured server, then probe `GET /info` in the background. A failed
     /// probe (unreachable, 404, parse error) keeps the cached answer; a
     /// successful one overwrites it. Never blocks or fails budget load.
-    private func refreshPayeeLocationSupport() {
+    private func refreshServerCapabilities() {
         let capturedURL = serverURL
         let key = "payeeLocationWritesEnabled_\(capturedURL)"
+        let groupsKey = "accountGroupWritesEnabled_\(capturedURL)"
         payeeLocationWritesEnabled = UserDefaults.standard.bool(forKey: key)
+        accountGroupWritesEnabled = UserDefaults.standard.bool(forKey: groupsKey)
         Task { [weak self] in
             guard let self else { return }
             guard let version = await self.serverClient.fetchServerVersion() else {
@@ -3011,6 +3070,9 @@ final class BudgetStore: ObservableObject {
             let supported = ServerVersion.supportsPayeeLocations(version)
             self.payeeLocationWritesEnabled = supported
             UserDefaults.standard.set(supported, forKey: key)
+            let groupsSupported = ServerVersion.supportsAccountGroups(version)
+            self.accountGroupWritesEnabled = groupsSupported
+            UserDefaults.standard.set(groupsSupported, forKey: groupsKey)
         }
     }
 
@@ -3439,7 +3501,7 @@ final class BudgetStore: ObservableObject {
 
     func createAccountGroup(name: String, assignTo account: Account? = nil) async throws {
         let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !clean.isEmpty, let syncClient else { return }
+        guard accountGroupWritesEnabled, !clean.isEmpty, let syncClient else { return }
         let id = UUID().uuidString
         try await syncClient.createAccountGroup(id: id, name: clean)
         if let account {
@@ -3450,59 +3512,38 @@ final class BudgetStore: ObservableObject {
 
     func renameAccountGroup(_ group: AccountGroup, name: String) async throws {
         let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !clean.isEmpty, let syncClient else { return }
+        guard accountGroupWritesEnabled, !clean.isEmpty, let syncClient else { return }
         try await syncClient.updateAccountGroup(id: group.id, name: clean)
         await refreshDataOnly()
     }
 
     func deleteAccountGroup(_ group: AccountGroup) async throws {
-        guard let syncClient else { return }
+        guard accountGroupWritesEnabled, let syncClient else { return }
         try await syncClient.deleteAccountGroup(id: group.id)
         await refreshDataOnly()
     }
 
     func setAccountGroup(_ account: Account, groupId: String?) async throws {
-        guard let syncClient else { return }
+        guard accountGroupWritesEnabled, let syncClient else { return }
         try await syncClient.setAccountGroup(accountId: account.id, groupId: groupId)
         await refreshDataOnly()
     }
 
-    func dropAccount(_ accountId: String, on targetId: String, after: Bool) async throws {
+    /// Move an account to `index` within a displayed run of accounts that
+    /// share a group (`peers`, top to bottom), the way List reports a drop.
+    func dropAccount(_ accountId: String, at index: Int, among peers: [Account], groupId: String?) async throws {
         guard let syncClient,
               let source = accounts.first(where: { $0.id == accountId }),
-              let target = accounts.first(where: { $0.id == targetId }),
-              source.id != target.id,
-              source.offBudget == target.offBudget,
-              source.closed == target.closed else { return }
+              let section = peers.first,
+              source.offBudget == section.offBudget,
+              source.closed == section.closed,
+              // A plain reorder is safe on any server; changing group is not.
+              accountGroupWritesEnabled || source.groupId == groupId else { return }
 
-        let peers = accounts
-            .filter {
-                $0.id != source.id && $0.offBudget == target.offBudget &&
-                    $0.closed == target.closed && $0.groupId == target.groupId
-            }
-            .sorted {
-                $0.sortOrder == $1.sortOrder ? $0.id < $1.id : $0.sortOrder < $1.sortOrder
-            }
-        let targetIndex = peers.firstIndex(where: { $0.id == target.id })
-        let beforeAccountId: String? = if after, let targetIndex, peers.indices.contains(targetIndex + 1) {
-            peers[targetIndex + 1].id
-        } else {
-            target.id
-        }
-
-        try await syncClient.moveAccount(
-            accountId: source.id,
-            toGroupId: target.groupId,
-            beforeAccountId: beforeAccountId
-        )
-        await refreshDataOnly()
-    }
-
-    func dropAccountIntoGroup(_ accountId: String, groupId: String) async throws {
-        guard let syncClient,
-              accounts.contains(where: { $0.id == accountId && !$0.closed }),
-              accountGroups.contains(where: { $0.id == groupId }) else { return }
-        try await syncClient.moveAccount(accountId: accountId, toGroupId: groupId, beforeAccountId: nil)
+        // The first peer at or below the drop point, skipping the dragged
+        // account itself; nil appends, which is what a drop at the end means.
+        let beforeAccountId = peers.dropFirst(index).first { $0.id != accountId }?.id
+        try await syncClient.moveAccount(accountId: accountId, toGroupId: groupId, beforeAccountId: beforeAccountId)
         await refreshDataOnly()
     }
 
@@ -3878,8 +3919,8 @@ final class BudgetStore: ObservableObject {
         var targets = Set<TransactionImpactTarget>()
         if let prepared {
             var final = RulesEngine.apply(transaction, rules: prepared.rules, context: prepared.context).transaction
-            if preserveCategory, let categoryId = transaction.categoryId {
-                final.categoryId = categoryId
+            if preserveCategory {
+                final.categoryId = transaction.categoryId
             }
             targets = await impactTargets(for: [final])
         }
@@ -4484,27 +4525,12 @@ final class BudgetStore: ObservableObject {
         let walletIds = bankSyncAccounts
             .filter { $0.source == .financeKit && !$0.closed }
             .map(\.id)
-        let authorized = walletIds.isEmpty ? false : await appleWalletStore.availability() == .authorized
-        updateWalletBackgroundDelivery(enabled: authorized)
-        guard authorized else { return [] }
+        guard !walletIds.isEmpty else { return [] }
+        guard await appleWalletStore.availability() == .authorized else { return [] }
         guard let result = try? await syncBankAccounts(accountIds: walletIds),
               !result.importedTransactions.isEmpty else { return [] }
 
         return result.importedTransactions
-    }
-
-    /// Whether this device last turned FinanceKit background delivery on.
-    static let walletBackgroundDeliveryKey = "walletBackgroundDeliveryEnabled"
-
-    /// FinanceKit background delivery wakes the Wallet delivery extension,
-    /// which asks iOS to run this sync in the background (WalletDelivery).
-    /// FinanceKit is only called when the wanted state changes, so budgets
-    /// without Wallet accounts never touch it.
-    private func updateWalletBackgroundDelivery(enabled: Bool) {
-        let defaults = appleWalletLinkDefaults
-        guard defaults.bool(forKey: Self.walletBackgroundDeliveryKey) != enabled,
-              appleWalletStore.setBackgroundDelivery(enabled: enabled) else { return }
-        defaults.set(enabled, forKey: Self.walletBackgroundDeliveryKey)
     }
 
     func linkBankAccount(accountId: String, to remote: BankSyncRemoteAccount) async throws {
@@ -6015,6 +6041,13 @@ final class BudgetStore: ObservableObject {
         /// True for a picker choice or prefill; false for payee-history suggestions.
         var categoryIsExplicit: Bool = false
         var automaticCategoryPreview: AutomaticCategoryPreview?
+
+        /// Category the rules pass starts from: an explicit pick stands, and an
+        /// untouched preview reverts to its pre-rule source so rules run once.
+        var ruleInputCategoryId: String? {
+            guard !categoryIsExplicit, let preview = automaticCategoryPreview else { return categoryId }
+            return preview.sourceCategoryId
+        }
     }
 
     /// Category the add form should show before the user makes an explicit
@@ -6034,8 +6067,8 @@ final class BudgetStore: ObservableObject {
             !$0.tombstone && $0.transferAccountId == nil &&
                 $0.name.caseInsensitiveCompare(trimmedPayee) == .orderedSame
         }?.id
-        let historyCategoryId: String? = if let payeeId, let database {
-            try await database.mostRecentCategoryId(forPayeeId: payeeId)
+        let historyCategoryId: String? = if let payeeId {
+            try await payeeHistoryCategoryId(forPayeeId: payeeId)
         } else {
             nil
         }
@@ -6447,13 +6480,7 @@ final class BudgetStore: ObservableObject {
                 }
                 return nil
             } else {
-                let categoryId: String? = if form.categoryIsExplicit {
-                    form.categoryId
-                } else if let preview = form.automaticCategoryPreview {
-                    preview.sourceCategoryId
-                } else {
-                    form.categoryId
-                }
+                let categoryId = form.ruleInputCategoryId
                 let transaction = Transaction(
                     id: newId ?? UUID().uuidString,
                     accountId: form.accountId,

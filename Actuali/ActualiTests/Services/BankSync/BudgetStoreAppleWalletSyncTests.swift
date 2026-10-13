@@ -33,10 +33,6 @@ private final class CountingWalletStore: AppleWalletReading {
     func transactions(accountId: String, sinceDay: Int) async throws -> [AppleWalletTransaction] {
         try await base.transactions(accountId: accountId, sinceDay: sinceDay)
     }
-
-    func setBackgroundDelivery(enabled: Bool) -> Bool {
-        base.setBackgroundDelivery(enabled: enabled)
-    }
 }
 
 @MainActor
@@ -170,66 +166,36 @@ struct BudgetStoreAppleWalletSyncTests {
         #expect(store.bankSyncSummary == nil)
     }
 
-    /// A linked, authorized Wallet turns on FinanceKit background delivery,
-    /// whose extension asks iOS for this same sync. Once it's on, later syncs
-    /// leave FinanceKit alone.
-    @Test func autoSyncTurnsOnWalletBackgroundDeliveryOnce() async throws {
-        let (database, url) = try await makeDatabase()
-        defer { cleanup(url) }
-        let wallet = appleCard()
-        let store = try await makeStore(database: database, walletStore: wallet)
-
-        await store.autoSyncAppleWalletAccounts()
-        await store.autoSyncAppleWalletAccounts()
-
-        #expect(wallet.deliveryLog.requests.withLock { $0 } == [true])
-        #expect(try walletDefaults(for: url).bool(forKey: BudgetStore.walletBackgroundDeliveryKey))
-    }
-
-    /// With no Wallet account left to sync, delivery that was on is turned off
-    /// so the extension stops waking the app for nothing.
-    @Test func autoSyncTurnsOffWalletBackgroundDeliveryWithoutWalletAccounts() async throws {
-        let (database, url) = try await makeDatabase()
-        defer { cleanup(url) }
-        let wallet = appleCard()
-        let store = try await makeStore(database: database, walletStore: wallet, linked: false)
-        let defaults = try walletDefaults(for: url)
-        defaults.set(true, forKey: BudgetStore.walletBackgroundDeliveryKey)
-
-        await store.autoSyncAppleWalletAccounts()
-
-        #expect(wallet.deliveryLog.requests.withLock { $0 } == [false])
-        #expect(!defaults.bool(forKey: BudgetStore.walletBackgroundDeliveryKey))
-    }
-
-    /// Revoked Wallet access turns delivery off as well.
-    @Test func autoSyncTurnsOffWalletBackgroundDeliveryWhenAccessIsRevoked() async throws {
+    /// A pending purchase that settles for more (a tip) takes the new amount
+    /// on the next sync, so the account keeps matching the card.
+    @Test func aPendingPurchaseThatSettlesForMoreTakesTheNewAmount() async throws {
         let (database, url) = try await makeDatabase()
         defer { cleanup(url) }
         var wallet = appleCard()
-        wallet.availabilityValue = .denied
         let store = try await makeStore(database: database, walletStore: wallet)
-        let defaults = try walletDefaults(for: url)
-        defaults.set(true, forKey: BudgetStore.walletBackgroundDeliveryKey)
+        _ = try await store.syncBankAccounts()
+        let before = try accountBalance(path: url)
 
-        await store.autoSyncAppleWalletAccounts()
+        wallet.transactionsByAccount[Self.externalAccountId]![1] = AppleWalletTransaction(
+            id: "33333333-3333-3333-3333-333333333333",
+            amount: Decimal(string: "14.40")!, isCredit: false,
+            merchantName: nil, description: "Corner Store",
+            status: .booked, date: Self.daysAgo(1)
+        )
+        store.setAppleWalletStoreForTesting(wallet)
+        _ = try await store.syncBankAccounts()
 
-        #expect(wallet.deliveryLog.requests.withLock { $0 } == [false])
-        #expect(!defaults.bool(forKey: BudgetStore.walletBackgroundDeliveryKey))
-    }
-
-    /// Where delivery isn't supported (before iOS 26) nothing is recorded as
-    /// on, so a later sync on a supported OS still turns it on.
-    @Test func unsupportedWalletBackgroundDeliveryIsNotRecordedAsOn() async throws {
-        let (database, url) = try await makeDatabase()
-        defer { cleanup(url) }
-        var wallet = appleCard()
-        wallet.backgroundDeliverySupported = false
-        let store = try await makeStore(database: database, walletStore: wallet)
-
-        await store.autoSyncAppleWalletAccounts()
-
-        #expect(try !walletDefaults(for: url).bool(forKey: BudgetStore.walletBackgroundDeliveryKey))
+        let row = try #require(try rows(path: url, where: "financial_id = '33333333-3333-3333-3333-333333333333'").first)
+        #expect(row["amount"] == -1440)
+        #expect(row["cleared"] == 1)
+        #expect(try accountBalance(path: url) == before - 240)
+        // The new amount also goes to the server and other devices: a second
+        // amount message after the one the import wrote.
+        let rowId: String = row["id"]
+        let amountMessages = try self.row(path: url, sql: """
+        SELECT COUNT(*) AS n FROM messages_crdt WHERE row = ? AND column = 'amount'
+        """, arguments: [rowId])?["n"] as Int?
+        #expect(amountMessages == 2)
     }
 
     @Test func pullToRefreshImportsWalletTransactions() async throws {
@@ -672,6 +638,25 @@ struct BudgetStoreAppleWalletSyncTests {
             == Self.externalAccountId)
         #expect(try await database.fetchBankSyncLocalLinks().isEmpty)
         #expect(try row(path: url, sql: "SELECT COUNT(*) AS count FROM messages_crdt")?["count"] as Int? == 0)
+    }
+
+    /// Access denied in-app is granted in Settings, outside it — the setup
+    /// screen re-asks on return, and that refresh must pick the grant up (GH #555).
+    @Test func refreshPicksUpAccessGrantedInSettings() async throws {
+        let (database, url) = try await makeDatabase()
+        defer { cleanup(url) }
+        var wallet = appleCard()
+        wallet.availabilityValue = .denied
+        let store = try await makeStore(database: database, walletStore: wallet)
+
+        #expect(try await store.connectAppleWallet() == false)
+        #expect(store.appleWalletAvailability == .denied)
+
+        wallet.availabilityValue = .authorized
+        store.setAppleWalletStoreForTesting(wallet)
+        await store.refreshAppleWalletAvailability()
+
+        #expect(store.appleWalletAvailability == .authorized)
     }
 
     /// A device that can't serve the feed skips the automatic pass entirely —

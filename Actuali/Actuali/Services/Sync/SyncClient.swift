@@ -393,8 +393,8 @@ actor SyncClient {
             }
 
             finalTransaction = result.transaction
-            if preserveCategory, let categoryId = transaction.categoryId {
-                finalTransaction.categoryId = categoryId
+            if preserveCategory {
+                finalTransaction.categoryId = transaction.categoryId
             }
             if let name = result.pendingPayeeName {
                 finalTransaction.payeeId = try await resolvePayee(
@@ -961,7 +961,7 @@ actor SyncClient {
                     ("imported_description", update.importedPayee),
                     ("notes", update.notes),
                     ("cleared", update.cleared ? 1 : 0),
-                ]
+                ] + (update.amount.map { [("amount", $0)] } ?? [])
             )
         }
 
@@ -1001,7 +1001,7 @@ actor SyncClient {
                     ("imported_description", update.importedPayee),
                     ("notes", update.notes),
                     ("cleared", update.cleared ? 1 : 0),
-                ]
+                ] + (update.amount.map { [("amount", $0)] } ?? [])
             )
         }
         let result = try database.materializeBankSync(
@@ -1115,7 +1115,11 @@ actor SyncClient {
         var fields: [(column: String, value: (any Sendable)?)] = [
             ("sort_order", result.sortOrder),
         ]
-        fields.append(("account_group_id", result.groupId))
+        // Upstream moveAccount only sends account_group_id when the caller
+        // passes one, so a plain reorder stays valid on pre-26.9 servers.
+        if result.groupChanged {
+            fields.append(("account_group_id", result.groupId))
+        }
         var messages = try await messageGenerator.messages(
             dataset: "accounts", row: result.accountId, fields: fields
         )
@@ -2008,16 +2012,19 @@ actor SyncClient {
             importedPayee: nil
         )
         transaction.schedule = schedule.id
+        // Apply the linked rule's actions directly (loot-core parity).
+        // RulesEngine.apply skips schedule rules when transaction.schedule is
+        // already set, so actions fire once here and won't double-apply during
+        // createTransaction's general rules pass.
+        let actionResult = RulesEngine.apply(
+            actions: ScheduleConditions.actions(from: schedule.actionsJSON),
+            to: transaction,
+            ruleId: schedule.id
+        )
+        guard !actionResult.isDeleted else { return }
+        transaction = actionResult.transaction
+        transaction.schedule = schedule.id
         if try database.transferAccountId(forPayeeId: transaction.payeeId) != nil {
-            let actionResult = RulesEngine.apply(
-                actions: ScheduleConditions.actions(from: schedule.actionsJSON),
-                to: transaction,
-                ruleId: schedule.id
-            )
-            guard !actionResult.isDeleted else { return }
-            transaction = actionResult.transaction
-            transaction.schedule = schedule.id
-
             if let transfer = try scheduledTransfer(for: transaction, in: database) {
                 try await createTransfer(source: transfer.source, target: transfer.target)
             } else {

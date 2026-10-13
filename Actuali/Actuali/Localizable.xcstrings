@@ -24721,6 +24721,98 @@
         }
       }
     },
+    "Category from Payee History" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kategorie aus Empfängerverlauf"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Category from Payee History"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Categoría según el historial del beneficiario"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Catégorie selon l’historique du bénéficiaire"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Categoria dalla cronologia del beneficiario"
+          }
+        },
+        "nl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Categorie uit begunstigdengeschiedenis"
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Categoria pelo histórico do favorecido"
+          }
+        }
+      }
+    },
+    "Category from Payee History gives a new transaction the category of the last transaction at the same payee when no category is chosen. Rules still run after it." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "„Kategorie aus Empfängerverlauf“ gibt einer neuen Buchung die Kategorie der letzten Buchung beim selben Empfänger, wenn keine Kategorie gewählt ist. Regeln werden danach weiterhin angewendet."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Category from Payee History gives a new transaction the category of the last transaction at the same payee when no category is chosen. Rules still run after it."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "«Categoría según el historial del beneficiario» asigna a una nueva transacción la categoría de la última transacción con el mismo beneficiario cuando no se elige ninguna. Las reglas se siguen aplicando después."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "« Catégorie selon l’historique du bénéficiaire » attribue à une nouvelle transaction la catégorie de la dernière transaction avec le même bénéficiaire lorsqu’aucune catégorie n’est choisie. Les règles s’appliquent toujours ensuite."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "«Categoria dalla cronologia del beneficiario» assegna a una nuova transazione la categoria dell’ultima transazione con lo stesso beneficiario quando non è scelta alcuna categoria. Le regole vengono comunque applicate dopo."
+          }
+        },
+        "nl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "‘Categorie uit begunstigdengeschiedenis’ geeft een nieuwe transactie de categorie van de laatste transactie bij dezelfde begunstigde als er geen categorie is gekozen. Regels worden daarna nog steeds toegepast."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "“Categoria pelo histórico do favorecido” dá a uma nova transação a categoria da última transação com o mesmo favorecido quando nenhuma categoria é escolhida. As regras continuam sendo aplicadas depois."
+          }
+        }
+      }
+    },
     "Category Funding" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -47162,53 +47254,6 @@
         }
       }
     },
-    "Last Wallet Update" : {
-      "comment" : "Settings label for when Wallet (FinanceKit) last reported changes in the background",
-      "localizations" : {
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Letzte Wallet-Aktualisierung"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Last Wallet Update"
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Última actualización de Wallet"
-          }
-        },
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Dernière mise à jour Wallet"
-          }
-        },
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Ultimo aggiornamento di Wallet"
-          }
-        },
-        "nl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Laatste Wallet-update"
-          }
-        },
-        "pt-BR" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Última atualização da Wallet"
-          }
-        }
-      }
-    },
     "Layout" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -56761,6 +56806,52 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Abrir Ajustes para permitir notificações"
+          }
+        }
+      }
+    },
+    "Open Settings to Allow Wallet Access" : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Öffnen Sie die Einstellungen, um den Zugriff auf Wallet zu erlauben"
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open Settings to Allow Wallet Access"
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Abrir Ajustes para permitir el acceso a Wallet"
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Ouvrir Réglages pour autoriser l’accès à Cartes"
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Apri Impostazioni per consentire l’accesso a Wallet"
+          }
+        },
+        "nl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Open Instellingen om toegang tot Wallet toe te staan"
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Abrir Ajustes para permitir o acesso à Carteira"
           }
         }
       }
@@ -84429,53 +84520,6 @@
         }
       }
     },
-    "Wallet access is turned off" : {
-      "extractionState" : "stale",
-      "localizations" : {
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wallet-Zugriff ist deaktiviert"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wallet access is turned off"
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "El acceso a Wallet está desactivado"
-          }
-        },
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "L'accès à Wallet est désactivé"
-          }
-        },
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "L'accesso a Wallet è disattivato"
-          }
-        },
-        "nl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wallet-toegang is uitgeschakeld"
-          }
-        },
-        "pt-BR" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "O acesso à Wallet está desativado"
-          }
-        }
-      }
-    },
     "Wallet Automation" : {
       "comment" : "Wallet automation screen title",
       "extractionState" : "stale",
@@ -84520,53 +84564,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Automação do Wallet"
-          }
-        }
-      }
-    },
-    "Wallet refresh request failed: %@" : {
-      "comment" : "Settings footnote when the Wallet delivery extension could not request a background refresh; %@ is the system error",
-      "localizations" : {
-        "de" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wallet-Aktualisierungsanforderung fehlgeschlagen: %@"
-          }
-        },
-        "en" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wallet refresh request failed: %@"
-          }
-        },
-        "es" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "La solicitud de actualización de Wallet falló: %@"
-          }
-        },
-        "fr" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "La demande d'actualisation Wallet a échoué : %@"
-          }
-        },
-        "it" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Richiesta di aggiornamento Wallet non riuscita: %@"
-          }
-        },
-        "nl" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Wallet-vernieuwingsverzoek mislukt: %@"
-          }
-        },
-        "pt-BR" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "A solicitação de atualização da Wallet falhou: %@"
           }
         }
       }
@@ -88862,6 +88859,52 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "Criar grupo"
+          }
+        }
+      }
+    },
+    "Account groups require Actual Server 26.9.0 or later." : {
+      "localizations" : {
+        "de" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Kontogruppen erfordern Actual Server 26.9.0 oder neuer."
+          }
+        },
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Account groups require Actual Server 26.9.0 or later."
+          }
+        },
+        "es" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Los grupos de cuentas requieren Actual Server 26.9.0 o posterior."
+          }
+        },
+        "fr" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Les groupes de comptes nécessitent Actual Server 26.9.0 ou une version ultérieure."
+          }
+        },
+        "it" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "I gruppi di account richiedono Actual Server 26.9.0 o successivo."
+          }
+        },
+        "nl" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Accountgroepen vereisen Actual Server 26.9.0 of hoger."
+          }
+        },
+        "pt-BR" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Grupos de contas exigem o Actual Server 26.9.0 ou posterior."
           }
         }
       }
