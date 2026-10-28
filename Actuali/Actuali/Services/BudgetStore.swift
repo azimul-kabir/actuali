@@ -337,9 +337,14 @@ final class BudgetStore: ObservableObject {
         supportsOpenIDLogin && supportsPasswordLogin && !ownerExists
     }
 
+    @Published private(set) var currentLocalBudget: BudgetMetadata?
+
     @Published var currentBudgetId: String? {
         didSet {
             UserDefaults.standard.set(currentBudgetId, forKey: "currentBudgetId")
+            // Outside the change check: re-downloading the open budget keeps
+            // its id but rewrites its metadata.
+            refreshCurrentLocalBudget()
             if currentBudgetId != oldValue {
                 dismissTransactionImpactCues()
                 budgetType = .envelope
@@ -444,6 +449,12 @@ final class BudgetStore: ObservableObject {
     /// `payeeLocationWritesEnabled`.
     @Published private(set) var accountGroupWritesEnabled = false
 
+    /// Demo data is local-only, so its reorder controls persist directly to SQLite
+    /// instead of going through the server-gated CRDT write path.
+    var canReorderAccountGroups: Bool {
+        accountGroupWritesEnabled || currentBudgetId == DemoDataSeeder.budgetId
+    }
+
     /// Synced credit card configurations loaded from the preferences table (accountId -> CreditCardConfig).
     @Published var creditCardConfigs: [String: CreditCardConfig] = [:]
 
@@ -516,8 +527,7 @@ final class BudgetStore: ObservableObject {
     /// preference. Refreshing the local budget after the write switches reads
     /// between `zero_budgets` and `reflect_budgets` immediately.
     func setBudgetType(_ type: BudgetType) async {
-        guard let budgetId = currentBudgetId, let database, let syncClient else { return }
-        guard type != budgetType else { return }
+        guard let budgetId = currentBudgetId, let database, let syncClient, type != budgetType else { return }
 
         let previous = budgetType
         budgetType = type
@@ -1162,8 +1172,7 @@ final class BudgetStore: ObservableObject {
     /// Publishes `updated` first, then persists it. A failed write rolls the
     /// published value back and surfaces the error.
     private func persistCardAccountMappings(_ updated: [String: String]) async {
-        guard currentBudgetId != nil else { return }
-        guard updated != cardAccountMappings else { return }
+        guard currentBudgetId != nil, updated != cardAccountMappings else { return }
         let previous = cardAccountMappings
         cardAccountMappings = updated
         guard let syncClient else {
@@ -1713,10 +1722,8 @@ final class BudgetStore: ObservableObject {
 
     func categoryBudgetForIntent(categoryId: String) async -> CategoryBudget? {
         let currentMonth = currentMonthString()
-        if let currentBudgetMonth, currentBudgetMonth.month == currentMonth {
-            if let found = currentBudgetMonth.categoryBudgets.first(where: { $0.categoryId == categoryId }) {
-                return found
-            }
+        if let currentBudgetMonth, currentBudgetMonth.month == currentMonth, let found = currentBudgetMonth.categoryBudgets.first(where: { $0.categoryId == categoryId }) {
+            return found
         }
         do {
             let db: BudgetDatabase
@@ -1792,6 +1799,47 @@ final class BudgetStore: ObservableObject {
         let isEncrypted: Bool
     }
 
+    /// Re-reads the open budget's metadata. Call after writing metadata.json
+    /// without changing `currentBudgetId`.
+    func refreshCurrentLocalBudget() {
+        currentLocalBudget = currentBudgetId.flatMap { currentID in
+            fileManager.listLocalBudgets().first { $0.id == currentID }
+        }
+    }
+
+    func currentCloudFileId() -> String? {
+        currentLocalBudget?.cloudFileId
+    }
+
+    /// Keeps the selected local budget visible while the server list is stale
+    /// or unavailable.
+    func selectedRemoteBudget() -> RemoteBudget? {
+        guard let metadata = currentLocalBudget,
+              let cloudFileId = metadata.cloudFileId
+        else { return nil }
+
+        if let budget = remoteBudgets.first(where: { $0.id == cloudFileId }) {
+            return budget
+        }
+        return RemoteBudget(
+            id: cloudFileId,
+            name: metadata.budgetName ?? "Unknown",
+            groupId: metadata.groupId,
+            isEncrypted: metadata.encryptKeyId != nil
+        )
+    }
+
+    /// Returns the budget if its encryption password is still needed;
+    /// otherwise starts the download.
+    func openRemoteBudget(_ budget: RemoteBudget) -> RemoteBudget? {
+        guard downloadingBudgetId == nil else { return nil }
+        if budget.isEncrypted, EncryptionKeyManager.load(fileId: budget.id) == nil {
+            return budget
+        }
+        Task { await downloadBudget(budget) }
+        return nil
+    }
+
     // MARK: - Initialization
 
     @MainActor static let shared = BudgetStore()
@@ -1862,6 +1910,7 @@ final class BudgetStore: ObservableObject {
     func configureAppleWalletLinksForTesting(defaults: UserDefaults, budgetId: String) {
         appleWalletLinkDefaults = defaults
         _currentBudgetId = Published(initialValue: budgetId)
+        refreshCurrentLocalBudget()
     }
 
     /// Test-only: swap in a file manager rooted at a temp directory so
@@ -1926,6 +1975,9 @@ final class BudgetStore: ObservableObject {
         _currentBudgetId = Published(
             initialValue: defaults.string(forKey: "currentBudgetId")
         )
+        currentLocalBudget = currentBudgetId.flatMap { currentID in
+            fileManager.listLocalBudgets().first { $0.id == currentID }
+        }
         _excludedFromSpentCategoryIds = Published(
             initialValue: Self.loadExcludedFromSpentCategoryIds(for: defaults.string(forKey: "currentBudgetId"))
         )
@@ -3104,7 +3156,12 @@ final class BudgetStore: ObservableObject {
     /// Populate a local "demo" budget with curated data, for screenshots and for
     /// letting users (and App Review) explore the app without configuring a server.
     /// Logs out any active server session so sync cannot fire against a real server.
-    func loadDemoData(tracking: Bool = false, seedUncategorized: Bool = false, seedUnsupportedBankSync: Bool = false) async {
+    func loadDemoData(
+        tracking: Bool = false,
+        seedUncategorized: Bool = false,
+        seedUnsupportedBankSync: Bool = false,
+        pendingImports: PendingImportStore = .shared
+    ) async {
         // Log out any active session so sync doesn't try to fire against a
         // real server — but keep local budget files: trying the demo must
         // never destroy a user's synced data.
@@ -3116,18 +3173,20 @@ final class BudgetStore: ObservableObject {
                 seedUnsupportedBankSync: seedUnsupportedBankSync
             )
             currentBudgetId = DemoDataSeeder.budgetId
-            // Reseeding rebuilds the budget directory, but history persists in
-            // UserDefaults keyed by budget id and survives it. Clear it so a
-            // reseeded demo opens pristine (this also keeps UI tests
-            // deterministic: they share the simulator's defaults across
-            // launches, and earlier tests record demo-budget history).
+            // Reseeding rebuilds the budget directory, but history and the
+            // last viewed month persist in UserDefaults keyed by budget id and
+            // survive it. Clear both so a reseeded demo opens pristine (this
+            // also keeps UI tests deterministic: they share the simulator's
+            // defaults across launches, and earlier tests record demo-budget
+            // history and browse other months).
             HistoryStore.shared.clearPersistedActions(budgetID: DemoDataSeeder.budgetId)
+            lastViewedBudgetMonth = nil
             UserDefaults.standard.removeObject(
                 forKey: Self.excludedFromSpentDefaultsKey(for: DemoDataSeeder.budgetId)
             )
             await loadLocalBudget(DemoDataSeeder.budgetId)
             do {
-                try DemoDataSeeder.seedPendingImports()
+                try DemoDataSeeder.seedPendingImports(store: pendingImports)
             } catch {
                 logger.error("Demo pending import seed failed: \(error.localizedDescription, privacy: .public)")
             }
@@ -3158,6 +3217,10 @@ final class BudgetStore: ObservableObject {
         let loansBefore = loanConfigs
         let depositsBefore = depositConfigs
         let cardMappingsBefore = cardAccountMappings
+        let goalTemplatesFlagBefore = goalTemplatesEnabled
+        let goalTemplatesUIFlagBefore = goalTemplatesUIEnabled
+        let goalTemplateWritesBefore = flagWritesInFlight[FlagPreference.goalTemplates] ?? 0
+        let goalTemplateUIWritesBefore = flagWritesInFlight[FlagPreference.goalTemplatesUI] ?? 0
         do {
             // Fetch into locals, then publish in one batch (no suspension
             // points between assignments) so overlapping refreshes can't
@@ -3260,8 +3323,18 @@ final class BudgetStore: ObservableObject {
             }
             widgetBudgetMonth = fetchedWidgetBudgetMonth
             assignIfChanged(\.upcomingScheduledTransactionLength, fetchedUpcomingLength)
-            assignIfChanged(\.goalTemplatesEnabled, fetchedGoalTemplatesFlag)
-            assignIfChanged(\.goalTemplatesUIEnabled, fetchedGoalTemplatesUIFlag)
+            // A flag whose write was in flight at any point during these
+            // reads is newer than this snapshot, and that write publishes it.
+            if goalTemplateWritesBefore == 0,
+               (flagWritesInFlight[FlagPreference.goalTemplates] ?? 0) == 0,
+               goalTemplatesEnabled == goalTemplatesFlagBefore {
+                assignIfChanged(\.goalTemplatesEnabled, fetchedGoalTemplatesFlag)
+            }
+            if goalTemplateUIWritesBefore == 0,
+               (flagWritesInFlight[FlagPreference.goalTemplatesUI] ?? 0) == 0,
+               goalTemplatesUIEnabled == goalTemplatesUIFlagBefore {
+                assignIfChanged(\.goalTemplatesUIEnabled, fetchedGoalTemplatesUIFlag)
+            }
             // Keep a currency chosen while the reads were in flight. The
             // widget publishes once below, after the entire batch is applied.
             if let fetchedCurrencyCode, currencyCode == currencyCodeBefore {
@@ -3384,10 +3457,14 @@ final class BudgetStore: ObservableObject {
 
     // MARK: - Payees
 
+    /// Existing payee with this name (case-insensitive)
+    func existingPayee(named name: String) -> Payee? {
+        payees.first { $0.name.lowercased() == name.lowercased() }
+    }
+
     /// Find an existing payee by name (case-insensitive) or create a new one
     func findOrCreatePayee(name: String) async throws -> Payee {
-        // Look for existing payee (case-insensitive)
-        if let existing = payees.first(where: { $0.name.lowercased() == name.lowercased() }) {
+        if let existing = existingPayee(named: name) {
             return existing
         }
 
@@ -3549,21 +3626,40 @@ final class BudgetStore: ObservableObject {
         await refreshDataOnly()
     }
 
+    func moveAccountGroup(id: String, before targetId: String?) async throws {
+        guard canReorderAccountGroups else { return }
+        if currentBudgetId == DemoDataSeeder.budgetId {
+            guard let database else { return }
+            _ = try database.moveAccountGroup(id: id, before: targetId)
+        } else {
+            guard let syncClient else { return }
+            try await syncClient.moveAccountGroup(id: id, before: targetId)
+        }
+        await refreshDataOnly()
+    }
+
     /// Move an account to `index` within a displayed run of accounts that
     /// share a group (`peers`, top to bottom), the way List reports a drop.
     func dropAccount(_ accountId: String, at index: Int, among peers: [Account], groupId: String?) async throws {
-        guard let syncClient,
-              let source = accounts.first(where: { $0.id == accountId }),
+        guard let source = accounts.first(where: { $0.id == accountId }),
               let section = peers.first,
               source.offBudget == section.offBudget,
               source.closed == section.closed,
-              // A plain reorder is safe on any server; changing group is not.
-              accountGroupWritesEnabled || source.groupId == groupId else { return }
+              // Group assignment stays server-gated for synced budgets. The demo
+              // is local-only and may reorder its seeded groups without sync.
+              accountGroupWritesEnabled || currentBudgetId == DemoDataSeeder.budgetId || source.groupId == groupId
+        else { return }
 
         // The first peer at or below the drop point, skipping the dragged
         // account itself; nil appends, which is what a drop at the end means.
         let beforeAccountId = peers.dropFirst(index).first { $0.id != accountId }?.id
-        try await syncClient.moveAccount(accountId: accountId, toGroupId: groupId, beforeAccountId: beforeAccountId)
+        if currentBudgetId == DemoDataSeeder.budgetId {
+            guard let database else { return }
+            _ = try database.moveAccount(accountId: accountId, toGroupId: groupId, beforeAccountId: beforeAccountId)
+        } else {
+            guard let syncClient else { return }
+            try await syncClient.moveAccount(accountId: accountId, toGroupId: groupId, beforeAccountId: beforeAccountId)
+        }
         await refreshDataOnly()
     }
 
@@ -3923,6 +4019,7 @@ final class BudgetStore: ObservableObject {
     func createTransaction(
         _ transaction: Transaction,
         preserveCategory: Bool = false,
+        resolvePayeeName: Bool = false,
         showImpact: Bool = false
     ) async throws -> SyncClient.TransactionCreateResult {
         guard let syncClient else {
@@ -3949,7 +4046,8 @@ final class BudgetStore: ObservableObject {
                 transaction,
                 applyRules: true,
                 prepared: prepared,
-                preserveCategory: preserveCategory
+                preserveCategory: preserveCategory,
+                resolvePayeeName: resolvePayeeName
             )
 
             // Publish the persisted row before the full refresh so local observers
@@ -4408,8 +4506,7 @@ final class BudgetStore: ObservableObject {
         } ?? [:]
         if !storedWalletLinks.isEmpty {
             do {
-                guard isCurrentRequest() else { return nil }
-                guard let capturedBudgetId else { return nil }
+                guard isCurrentRequest(), let capturedBudgetId else { return nil }
                 let result = try migrateLegacyAppleWalletLinksIfNeeded(
                     database: database,
                     budgetId: capturedBudgetId,
@@ -4547,8 +4644,7 @@ final class BudgetStore: ObservableObject {
             .map(\.id)
         let authorized = walletIds.isEmpty ? false : await appleWalletStore.availability() == .authorized
         updateWalletBackgroundDelivery(enabled: authorized)
-        guard authorized else { return [] }
-        guard let result = try? await syncBankAccounts(accountIds: walletIds),
+        guard authorized, let result = try? await syncBankAccounts(accountIds: walletIds),
               !result.importedTransactions.isEmpty else { return [] }
 
         return result.importedTransactions
@@ -5290,7 +5386,7 @@ final class BudgetStore: ObservableObject {
         return (from, to)
     }
 
-    private func transferPayee(forAccountId accountId: String) -> Payee? {
+    func transferPayee(forAccountId accountId: String) -> Payee? {
         payees.first { $0.transferAccountId == accountId && !$0.tombstone }
     }
 
@@ -5515,6 +5611,7 @@ final class BudgetStore: ObservableObject {
             return
         }
         var deleted: [Transaction] = []
+        var unlinked: [Transaction] = []
         for tx in transactions {
             // Deleting a split deletes its children too — orphaned children
             // would be invisible in the list but still feed reports.
@@ -5537,12 +5634,37 @@ final class BudgetStore: ObservableObject {
                     continue
                 }
             }
+            // A transfer takes its other leg with it, as upstream's
+            // transfer.ts removeTransfer does. A split-child leg is unlinked
+            // instead: deleting it would break its split, and leaving the link
+            // would make the split's next save fail with transferPartnerMissing.
+            if !tx.isParent, let partnerId = tx.transferId, let database {
+                do {
+                    if var partner = try await database.fetchTransaction(id: partnerId) {
+                        partner.tombstone = true
+                        deleted.append(partner)
+                    } else if var child = try await database.fetchSplitChild(id: partnerId) {
+                        child.transferId = nil
+                        child.payeeId = nil
+                        child.payeeName = nil
+                        unlinked.append(child)
+                    }
+                } catch {
+                    self.error = String(format: String(localized: "Failed to delete transaction: %@"), error.localizedDescription)
+                    continue
+                }
+            }
             var copy = tx
             copy.tombstone = true
             deleted.append(copy)
         }
+        // Selecting both legs of a transfer reaches each row twice. Deletes
+        // come first, so a child that is also deleted is not just unlinked.
+        var seen = Set<String>()
+        let updates = deleted.filter { seen.insert($0.id).inserted }.map { ($0, Set(["tombstone"])) }
+            + unlinked.filter { seen.insert($0.id).inserted }.map { ($0, Set(["transferred_id", "description"])) }
         do {
-            try await syncClient.updateTransactions(deleted, changedFields: ["tombstone"])
+            try await syncClient.updateTransactions(updates)
         } catch {
             self.error = String(format: String(localized: "Failed to delete transaction: %@"), error.localizedDescription)
         }
@@ -5625,20 +5747,18 @@ final class BudgetStore: ObservableObject {
         // Handle transfers: duplicate both legs. A missing partner falls
         // through to the standard branch (the copy can't keep the transfer
         // link); a read error must surface, not silently degrade the copy.
-        if let transferId = transaction.transferId, !transferId.isEmpty, let database {
-            if let partner = try await database.fetchTransaction(id: transferId) {
-                let newSourceId = UUID().uuidString
-                let newTargetId = UUID().uuidString
+        if let transferId = transaction.transferId, !transferId.isEmpty, let database, let partner = try await database.fetchTransaction(id: transferId) {
+            let newSourceId = UUID().uuidString
+            let newTargetId = UUID().uuidString
 
-                var newSource = makeDuplicateTransaction(from: transaction, id: newSourceId, sortOrder: sortOrder)
-                newSource.transferId = newTargetId
+            var newSource = makeDuplicateTransaction(from: transaction, id: newSourceId, sortOrder: sortOrder)
+            newSource.transferId = newTargetId
 
-                var newTarget = makeDuplicateTransaction(from: partner, id: newTargetId, sortOrder: sortOrder)
-                newTarget.transferId = newSourceId
+            var newTarget = makeDuplicateTransaction(from: partner, id: newTargetId, sortOrder: sortOrder)
+            newTarget.transferId = newSourceId
 
-                try await syncClient.createTransfer(source: newSource, target: newTarget)
-                return
-            }
+            try await syncClient.createTransfer(source: newSource, target: newTarget)
+            return
         }
 
         // Handle split parent
@@ -6197,7 +6317,7 @@ final class BudgetStore: ObservableObject {
         case split(amountCents: Int, lines: [SplitPlanLine])
     }
 
-    static func plan(for form: TransactionForm) throws -> TransactionFormPlan {
+    nonisolated static func plan(for form: TransactionForm) throws -> TransactionFormPlan {
         guard let dollars = Double(form.amount),
               let unsignedCents = Transaction.cents(fromDollars: dollars) else {
             throw BudgetStoreError.invalidAmount
@@ -6220,7 +6340,7 @@ final class BudgetStore: ObservableObject {
     /// lines must add up exactly to the total. An `isOpposite` line runs
     /// against the transaction's direction — a refund inside a spend
     /// (GH #216).
-    private static func planStandardOrSplit(
+    private nonisolated static func planStandardOrSplit(
         _ form: TransactionForm,
         amountCents: Int,
         sign: Int
@@ -7883,18 +8003,71 @@ final class BudgetStore: ObservableObject {
         case failed(String)
     }
 
+    /// The two Experimental toggles' synced preference ids.
+    enum FlagPreference {
+        static let goalTemplates = "flags.goalTemplatesEnabled"
+        static let goalTemplatesUI = "flags.goalTemplatesUIEnabled"
+    }
+
+    /// Non-zero while a write for that preference is in flight. The
+    /// `preferences` row stays stale until the write lands, and the write
+    /// itself publishes the new value, so a refresh must not put the old one
+    /// back over it.
+    private var flagWritesInFlight: [String: Int] = [:]
+
+    /// Writes one of the goal-templates flags to the synced `preferences`
+    /// table and publishes it, optimistically: the switch, and the value
+    /// VoiceOver reads from it, have to follow the tap rather than a CRDT
+    /// write that waits its turn on the SyncClient actor.
+    private func setSyncedFlag(
+        _ keyPath: ReferenceWritableKeyPath<BudgetStore, Bool>,
+        id: String,
+        enabled: Bool,
+        errorFormat: String
+    ) async {
+        guard let syncClient else { return }
+        let budgetId = currentBudgetId
+        let activeDatabase = database
+        let previous = self[keyPath: keyPath]
+        self[keyPath: keyPath] = enabled
+        flagWritesInFlight[id, default: 0] += 1
+        do {
+            try await syncClient.setPreference(id: id, value: enabled ? "true" : "false")
+            flagWritesInFlight[id, default: 0] -= 1
+        } catch {
+            flagWritesInFlight[id, default: 0] -= 1
+            // A newer write for this flag owns the value and its outcome.
+            guard (flagWritesInFlight[id] ?? 0) == 0 else { return }
+            // A budget switched under the write is not this switch's error.
+            guard currentBudgetId == budgetId, let activeDatabase,
+                  self.database === activeDatabase else { return }
+            // The preference and CRDT message can commit before saving the
+            // sync clock fails, so read the one row back instead of assuming
+            // the rollback took — and publish once, not twice. A missing row
+            // reads as off; only a failed read falls back to the old value.
+            var stored: Bool?
+            do {
+                stored = try await activeDatabase.fetchPreference(id: id) == "true"
+            } catch {
+                // The read failed, so keep the value this write started from.
+            }
+            // A toggle that started during that read owns the value now.
+            guard (flagWritesInFlight[id] ?? 0) == 0,
+                  currentBudgetId == budgetId, self.database === activeDatabase else { return }
+            self[keyPath: keyPath] = stored ?? previous
+            self.error = String(format: errorFormat, error.localizedDescription)
+        }
+    }
+
     /// Flip the synced feature flag (the web's Settings → Experimental
     /// features toggle), so all clients agree on whether goals are on.
     func setGoalTemplatesEnabled(_ enabled: Bool) async {
-        guard let syncClient else { return }
-        do {
-            try await syncClient.setPreference(
-                id: "flags.goalTemplatesEnabled", value: enabled ? "true" : "false"
-            )
-            goalTemplatesEnabled = enabled
-        } catch {
-            self.error = String(format: String(localized: "Failed to update goal templates setting: %@"), error.localizedDescription)
-        }
+        await setSyncedFlag(
+            \.goalTemplatesEnabled,
+            id: FlagPreference.goalTemplates,
+            enabled: enabled,
+            errorFormat: String(localized: "Failed to update goal templates setting: %@")
+        )
     }
 
     /// Check/apply/overwrite budget templates for a month — the port of
@@ -8134,15 +8307,12 @@ final class BudgetStore: ObservableObject {
     @Published private(set) var goalTemplatesUIEnabled = false
 
     func setGoalTemplatesUIEnabled(_ enabled: Bool) async {
-        guard let syncClient else { return }
-        do {
-            try await syncClient.setPreference(
-                id: "flags.goalTemplatesUIEnabled", value: enabled ? "true" : "false"
-            )
-            goalTemplatesUIEnabled = enabled
-        } catch {
-            self.error = String(format: String(localized: "Failed to update automations setting: %@"), error.localizedDescription)
-        }
+        await setSyncedFlag(
+            \.goalTemplatesUIEnabled,
+            id: FlagPreference.goalTemplatesUI,
+            enabled: enabled,
+            errorFormat: String(localized: "Failed to update automations setting: %@")
+        )
     }
 
     /// Everything the automations editor needs for one category — the port
@@ -8542,10 +8712,7 @@ final class BudgetStore: ObservableObject {
                         // runs on. A length bound doesn't make that impossible,
                         // but it rules out the pasted-blob case; the web app has
                         // the same exposure.
-                        guard text.count <= 500 else {
-                            throw BudgetStoreError.ruleInvalidPattern(pattern: text)
-                        }
-                        guard (try? NSRegularExpression(pattern: text.lowercased())) != nil else {
+                        guard text.count <= 500, (try? NSRegularExpression(pattern: text.lowercased())) != nil else {
                             throw BudgetStoreError.ruleInvalidPattern(pattern: text)
                         }
                     }

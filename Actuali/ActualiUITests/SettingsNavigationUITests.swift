@@ -8,9 +8,7 @@ final class SettingsNavigationUITests: XCTestCase {
         case "Connection & Data":
             content = app.textFields["Server URL"]
         case "Budget View":
-            content = app.buttons.matching(
-                NSPredicate(format: "label BEGINSWITH 'View Style'")
-            ).firstMatch
+            content = app.switches["Category Status Dots"]
         case "Transactions & Automation":
             content = app.switches["Conventional Amount Entry"]
         case "Display":
@@ -32,8 +30,15 @@ final class SettingsNavigationUITests: XCTestCase {
             // RulesListView shows the list with its Add Rule toolbar button
             // instead of the no-rules-table placeholder.
             content = app.buttons["Add Rule"]
-        case "Bank Sync (SimpleFIN & Wallet)":
-            content = app.textFields["Setup token"]
+        case "Bank Sync":
+            // The hub lists the providers; the setup fields live one screen
+            // deeper. UI tests run on the simulator, where FinanceKit reports
+            // no Wallet data, so the Wallet provider row must not be offered.
+            content = app.descendants(matching: .any)["bankSync.provider.simpleFIN"]
+            XCTAssertFalse(
+                app.descendants(matching: .any)["bankSync.provider.appleWallet"].exists,
+                "Apple Wallet provider offered where FinanceKit has no data"
+            )
         case "History":
             content = app.staticTexts["No History Yet"]
         case "Support & Diagnostic":
@@ -63,7 +68,7 @@ final class SettingsNavigationUITests: XCTestCase {
             "Privacy",
             "Scheduled Transactions",
             "Rules",
-            "Bank Sync (SimpleFIN & Wallet)",
+            "Bank Sync",
             "History",
             "Support & Diagnostic",
         ] {
@@ -72,11 +77,7 @@ final class SettingsNavigationUITests: XCTestCase {
             row.tap()
 
             let navigationBar = app.navigationBars[
-                destination == "Bank Sync (SimpleFIN & Wallet)"
-                    ? "Bank Sync"
-                    : destination == "Support & Diagnostic"
-                    ? "Support"
-                    : destination
+                destination == "Support & Diagnostic" ? "Support" : destination
             ]
             XCTAssertTrue(
                 navigationBar.waitForExistence(timeout: 5),

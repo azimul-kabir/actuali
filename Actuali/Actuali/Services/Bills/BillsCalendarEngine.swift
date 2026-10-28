@@ -32,20 +32,28 @@ enum BillsTabMode: String, CaseIterable, Identifiable, Sendable {
 
 /// Month cashflow summary for the bills calendar header.
 struct BillsMonthSummary: Equatable, Sendable {
-    let upcomingTotal: Int // cents
+    let upcomingBills: Int // cents (upcoming outflows)
+    let upcomingIncome: Int // cents (upcoming deposits)
     let overdueTotal: Int // cents
     let paidTotal: Int // cents
     let clearedCount: Int
     let totalCount: Int
+
+    /// Positive means bills exceed income (amount to cover), negative means surplus.
+    var upcomingNet: Int {
+        upcomingBills - upcomingIncome
+    }
 }
 
 /// Pure functions for generating calendar grid cells, occurrences, and summary statistics.
 enum BillsCalendarEngine: Sendable {
-    /// Number of blank leading cells in a Monday-first monthly calendar grid.
+    /// Number of blank leading cells for the configured week start (0 = Sunday ... 6 = Saturday).
     /// In `DayDate`, 1 = Sunday, 2 = Monday ... 7 = Saturday.
-    static func leadingEmptyDays(year: Int, month: Int) -> Int {
-        let firstDay = DayDate(year: year, month: month, day: 1)
-        return (firstDay.weekday + 5) % 7
+    static func leadingEmptyDays(year: Int, month: Int, firstDayOfWeekIdx: Int) -> Int {
+        let weekday = DayDate(year: year, month: month, day: 1).weekday - 1
+        // Match the Reports calendar: invalid indices fall back to Sunday.
+        let weekStart = (0...6).contains(firstDayOfWeekIdx) ? firstDayOfWeekIdx : 0
+        return (weekday - weekStart + 7) % 7
     }
 
     /// Days in the specified month (1...28/29/30/31).
@@ -310,26 +318,37 @@ enum BillsCalendarEngine: Sendable {
 
     /// Computes month cashflow totals and cleared count.
     static func summarize(items: [BillCalendarItem]) -> BillsMonthSummary {
-        var upcoming = 0
+        // Outflows and inflows are summed separately so scheduled deposits reduce the
+        // net requirement without inflating the bills totals.
+        var upcomingBills = 0
+        var upcomingIncome = 0
         var overdue = 0
         var paid = 0
         var cleared = 0
 
         for item in items {
-            let absAmt = abs(item.amount)
             switch item.status {
             case .paid, .completed:
-                paid += absAmt
+                if item.amount < 0 {
+                    paid += -item.amount
+                }
                 cleared += 1
             case .missed:
-                overdue += absAmt
+                if item.amount < 0 {
+                    overdue += -item.amount
+                }
             case .due, .upcoming, .scheduled:
-                upcoming += absAmt
+                if item.amount < 0 {
+                    upcomingBills += -item.amount
+                } else if item.amount > 0 {
+                    upcomingIncome += item.amount
+                }
             }
         }
 
         return BillsMonthSummary(
-            upcomingTotal: upcoming,
+            upcomingBills: upcomingBills,
+            upcomingIncome: upcomingIncome,
             overdueTotal: overdue,
             paidTotal: paid,
             clearedCount: cleared,

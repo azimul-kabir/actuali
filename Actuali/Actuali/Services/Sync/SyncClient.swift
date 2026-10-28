@@ -241,20 +241,41 @@ actor SyncClient {
     /// Create a transaction (optimistic local-first).
     /// `applyRules: false` skips the rules pass — used for split children,
     /// whose every field the caller spelled out explicitly (like `createSplit`).
+    /// `resolvePayeeName` resolves `payeeName` (when `payeeId` is nil) before
+    /// rules run. A new name gets a provisional id and is created only if the
+    /// final transaction still uses it — upstream `resolvePayee` /
+    /// `createNewPayees` in loot-core accounts/sync.ts.
     @discardableResult
     func createTransaction(
         _ transaction: Transaction,
         applyRules: Bool = true,
         prepared: PreparedRules? = nil,
-        preserveCategory: Bool = false
+        preserveCategory: Bool = false,
+        resolvePayeeName: Bool = false
     ) async throws -> TransactionCreateResult {
-        try await createTransaction(
+        var transaction = transaction
+        var provisionalPayee: Payee?
+        if resolvePayeeName, transaction.payeeId == nil, let name = transaction.payeeName {
+            // Rules see a set `payee` either way, so `notOneOf` and
+            // `doesNotContain` match a new merchant the way they do upstream.
+            var candidates: [Payee] = []
+            var candidatesByName: [String: Payee] = [:]
+            transaction.payeeId = try await resolvePayee(
+                named: name,
+                deferCreation: true,
+                pendingPayees: &candidates,
+                pendingPayeesByName: &candidatesByName
+            )
+            provisionalPayee = candidates.first
+        }
+        return try await createTransaction(
             transaction,
             applyRules: applyRules,
             prepared: prepared,
             preserveCategory: preserveCategory,
             financialIdPolicy: .unique,
-            resolveOriginalBankPayee: false
+            resolveOriginalBankPayee: false,
+            provisionalPayee: provisionalPayee
         )
     }
 
@@ -363,6 +384,7 @@ actor SyncClient {
         preserveCategory: Bool,
         financialIdPolicy: FinancialIdPolicy,
         resolveOriginalBankPayee: Bool,
+        provisionalPayee: Payee? = nil,
         expectedLink: ExpectedBankSyncLink? = nil
     ) async throws -> TransactionCreateResult {
         guard let database else { throw SyncError.notConfigured }
@@ -417,6 +439,14 @@ actor SyncClient {
             }
             if !result.changedFields.isEmpty {
                 logger.info("Rules updated \(result.changedFields.count, privacy: .public) field(s) on new transaction")
+            }
+        }
+        // Only create the provisional payee if it ended up being used (#777).
+        if let provisionalPayee, finalTransaction.payeeId == provisionalPayee.id {
+            if finalTransaction.financialId != nil {
+                pendingPayees.append(provisionalPayee)
+            } else {
+                try await createPayee(provisionalPayee)
             }
         }
 
@@ -1071,6 +1101,30 @@ actor SyncClient {
         let messages = try await messageGenerator.messages(dataset: "account_groups", row: id, fields: [("name", name)])
         for msg in try database.insertMessages(messages) {
             merkle = merkle.inserting(msg.timestamp)
+        }
+        merkle = merkle.pruned()
+        try saveClock()
+        scheduleAutomaticSync()
+    }
+
+    func moveAccountGroup(id: String, before targetId: String?) async throws {
+        guard let database else { throw SyncError.notConfigured }
+        let move = try database.moveAccountGroup(id: id, before: targetId)
+        var messages: [CRDTMessage] = []
+        for sibling in move.movedSiblings {
+            messages += try await messageGenerator.messages(
+                dataset: AccountGroup.datasetName,
+                row: sibling.id,
+                fields: [("sort_order", sibling.sortOrder)]
+            )
+        }
+        messages += try await messageGenerator.messages(
+            dataset: AccountGroup.datasetName,
+            row: move.id,
+            fields: [("sort_order", move.sortOrder)]
+        )
+        for message in try database.insertMessages(messages) {
+            merkle = merkle.inserting(message.timestamp)
         }
         merkle = merkle.pruned()
         try saveClock()

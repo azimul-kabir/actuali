@@ -71,7 +71,7 @@ struct BudgetView: View {
     @EnvironmentObject var budgetStore: BudgetStore
     @Environment(\.locale) private var locale
     @State private var selectedMonth = currentMonthString()
-    @State private var editingCategory: CategoryBudget?
+    @State private var editingBudgetAmount: EditBudgetAmountTarget?
     @State private var editingCategoryGroup: CategoryGroup?
     @State private var selectedCategory: CategoryBudget?
     @State private var renamingCategory: CategoryBudget?
@@ -215,8 +215,8 @@ struct BudgetView: View {
                     note: displayedMonthNote.text
                 )
             }
-            .sheet(item: $editingCategory) { category in
-                EditBudgetAmountSheet(category: category)
+            .sheet(item: $editingBudgetAmount) { target in
+                EditBudgetAmountSheet(target: target)
             }
             .sheet(item: $editingCategoryGroup) { group in
                 CategoryGroupSheet(group: group, month: selectedMonth)
@@ -284,13 +284,13 @@ struct BudgetView: View {
                     }
                 }
             )) {
+                // No accessibility identifiers on alert buttons: iOS drops
+                // them inside native alerts, and setting one wraps the button
+                // in a second AX node that makes label queries ambiguous.
                 TextField("Category Name", text: $renameText)
-                    .accessibilityIdentifier("categoryRename.name")
                 Button("Cancel", role: .cancel) {}
-                    .accessibilityIdentifier("categoryRename.cancel")
                 Button("Save") { commitRename() }
                     .disabled(Self.renameName(renameText) == nil)
-                    .accessibilityIdentifier("categoryRename.save")
             }
         }
         .initialSyncBanner()
@@ -324,7 +324,7 @@ struct BudgetView: View {
                             && !budgetStore.hiddenBudgetProgressCategoryIDs.contains(category.categoryId),
                         showsStatusDots: budgetStore.showCategoryStatusDots,
                         onShowDetails: { selectedCategory = $0 },
-                        onEditBudget: { editingCategory = $0 },
+                        onEditBudget: { editingBudgetAmount = EditBudgetAmountTarget(category: $0) },
                         onShowTransactions: showTransactions,
                         onMoveMoney: moveMoney,
                         onApplyTemplate: budgetStore.goalTemplatesEnabled
@@ -372,6 +372,7 @@ struct BudgetView: View {
                         isTrackingBudget: budget.isTrackingBudget,
                         showsSpent: budgetStore.showCompactSpentColumn,
                         showsBudgeted: budgetStore.showBudgetedAmounts,
+                        onEditBudget: { editingBudgetAmount = EditBudgetAmountTarget(income: $0) },
                         onShowTransactions: showTransactions
                     )
                 }
@@ -395,49 +396,26 @@ struct BudgetView: View {
         }
     }
 
-    /// The principal toolbar item centers the month between the two menus.
+    /// The principal toolbar item opens the month-and-year picker.
     private var monthStepper: some View {
-        HStack(spacing: 0) {
-            Button {
-                selectedMonth = Self.shiftMonth(selectedMonth, by: -1)
-            } label: {
-                Image(systemName: "chevron.left")
-                    .frame(width: 44, height: 44)
-                    .contentShape(.rect)
-            }
-            .accessibilityLabel("Previous month")
-            .accessibilityIdentifier("budget.previousMonth")
-
-            MonthPicker(
-                selectedMonth: $selectedMonth,
-                note: displayedMonthNote,
-                onEditNote: { editingMonthNote = true }
-            )
-
-            Button {
-                selectedMonth = Self.shiftMonth(selectedMonth, by: 1)
-            } label: {
-                Image(systemName: "chevron.right")
-                    .frame(width: 44, height: 44)
-                    .contentShape(.rect)
-            }
-            .accessibilityLabel("Next month")
-            .accessibilityIdentifier("budget.nextMonth")
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(.primary)
-        .tint(.primary)
-        .fixedSize(horizontal: true, vertical: false)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("budget.monthStepper")
+        MonthPicker(selectedMonth: $selectedMonth)
+            .buttonStyle(.plain)
+            .foregroundStyle(.primary)
+            .tint(.primary)
+            .fixedSize(horizontal: true, vertical: false)
+            .accessibilityIdentifier("budget.monthStepper")
     }
 
     /// The screen's toolbar, extracted from `body` so the whole screen stays
     /// within the compiler's type-check budget.
     @ToolbarContentBuilder
     private var budgetToolbar: some ToolbarContent {
+        ToolbarItem(placement: .principal) {
+            monthStepper
+        }
         ToolbarItem(placement: .topBarLeading) {
-            // Reordering is turned on from the options menu; this is its way out.
+            // Reorder mode replaces the table, so it keeps a visible way out
+            // beside the menu item that turned it on.
             if isReordering {
                 Button("Done") {
                     toggleReordering()
@@ -446,44 +424,33 @@ struct BudgetView: View {
                 .accessibilityIdentifier("budget.reorderDone")
             }
         }
-        // New Category / New Group live at the top of the options menu below
-        // (GH #157 follow-up) — creation is one more "how this looks and
-        // what's in it" action rather than its own toolbar button.
-        ToolbarItem(placement: .principal) {
-            monthStepper
-        }
         ToolbarItem(placement: .topBarLeading) {
-            // Budget actions get their own button so the options menu stays
-            // about how the table looks.
             if budgetStore.currentBudgetMonth != nil {
                 BudgetActionsMenu(
-                    onCopyPreviousMonthBudget: { copyPreviousMonthBudget() },
-                    onSetBudgetsToZero: { setBudgetsToZero() },
-                    onTemplateAction: budgetStore.goalTemplatesEnabled
-                        ? { runTemplates($0) } : nil,
-                    onCleanup: budgetStore.currentBudgetMonth?.isTrackingBudget == false
-                        && budgetStore.goalTemplatesEnabled
-                        ? { runCleanup() } : nil
+                    onNewCategory: { newBudgetItem = .category },
+                    canAddCategory: firstSelectableGroupId != nil,
+                    onNewGroup: { newBudgetItem = .group },
+                    onToggleReorder: { toggleReordering() },
+                    onExpandAllGroups: { expandAllGroups() },
+                    onCollapseAllGroups: { collapseAllGroups() },
+                    isReordering: isReordering,
+                    showHiddenCategories: $budgetStore.showHiddenCategories
                 )
                 .tint(.primary)
             }
         }
         ToolbarItem(placement: .topBarTrailing) {
-            // Every "how should this look" control lives here (GH #157).
-            // Whole-table expand/collapse is a menu rather than a long-press
-            // on the group headers: SwiftUI context menus don't fire inside
-            // the clean style's section headers (GH #130).
-            // The isolated method references can't be inferred as optional
-            // closures under Swift 6, so wrap them.
             let hasBudget = budgetStore.currentBudgetMonth != nil
             BudgetOptionsMenu(
-                onNewCategory: hasBudget ? { newBudgetItem = .category } : nil,
-                canAddCategory: firstSelectableGroupId != nil,
-                onNewGroup: hasBudget ? { newBudgetItem = .group } : nil,
-                onToggleReorder: hasBudget ? { toggleReordering() } : nil,
-                isReordering: isReordering,
-                expandAllGroups: hasBudget ? { expandAllGroups() } : nil,
-                collapseAllGroups: hasBudget ? { collapseAllGroups() } : nil
+                onCopyPreviousMonthBudget: hasBudget ? { copyPreviousMonthBudget() } : nil,
+                onSetBudgetsToZero: hasBudget ? { setBudgetsToZero() } : nil,
+                // Keep template actions visible in the ellipsis, but disabled until
+                // the synced Goal Templates feature is enabled in Budget View Settings.
+                onTemplateAction: hasBudget ? { runTemplates($0) } : nil,
+                onCleanup: hasBudget && budgetStore.currentBudgetMonth?.isTrackingBudget == false
+                    ? { runCleanup() } : nil,
+                monthNote: displayedMonthNote,
+                onEditMonthNote: hasBudget ? { editingMonthNote = true } : nil
             )
             .tint(.primary)
             .accessibilityIdentifier("budget.optionsMenu")
@@ -932,7 +899,7 @@ struct BudgetView: View {
                             setCategoryHidden(category.categoryId, hidden: $0)
                         },
                         onShowDetails: { selectedCategory = $0 },
-                        onEditBudget: { editingCategory = $0 },
+                        onEditBudget: { editingBudgetAmount = EditBudgetAmountTarget(category: $0) },
                         // Name shows all time, Spent shows
                         // the displayed month (GH #56).
                         onShowTransactions: showTransactions,
@@ -976,6 +943,7 @@ struct BudgetView: View {
                             setCategoryHidden(income.categoryId, hidden: $0)
                         },
                         showsBudgeted: budget.toBudget == nil && budgetStore.showBudgetedAmounts,
+                        onEditBudget: { editingBudgetAmount = EditBudgetAmountTarget(income: $0) },
                         onShowTransactions: showTransactions
                     )
                 }
@@ -1888,6 +1856,7 @@ struct IncomeCategoryRow: View {
     var isDimmed = false
     var onSetHidden: ((Bool) -> Void)?
     var showsBudgeted = false
+    var onEditBudget: (IncomeCategory) -> Void = { _ in }
     var onShowTransactions: (IncomeCategory, String?) -> Void = { _, _ in }
 
     var body: some View {
@@ -1919,9 +1888,25 @@ struct IncomeCategoryRow: View {
                 ))
             }
             if showsBudgeted {
-                Text("Budgeted: \(budgetStore.displayBalance(income.budgeted))")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Button {
+                    onEditBudget(income)
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("Budgeted: \(budgetStore.displayBalance(income.budgeted))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Image(systemName: "pencil")
+                            .font(.caption2)
+                            .foregroundStyle(.tint)
+                    }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(CompactBudgetAccessibility.editBudget(
+                    category: income.categoryName,
+                    amount: budgetStore.displayBalance(income.budgeted),
+                    locale: locale
+                ))
+                .accessibilityIdentifier("incomeBudgeted.\(income.categoryId)")
             }
         }
         .opacity(isDimmed ? 0.5 : 1)
@@ -2391,23 +2376,49 @@ struct CompactCategoryStatusDot: View {
     }
 }
 
+/// Shared fields needed to edit a category-month's budget, whether income or expense.
+private struct EditBudgetAmountTarget: Identifiable {
+    let month: String
+    let categoryId: String
+    let categoryName: String
+    let budgeted: Int
+
+    var id: String {
+        "\(month)-\(categoryId)"
+    }
+
+    init(category: CategoryBudget) {
+        month = category.month
+        categoryId = category.categoryId
+        categoryName = category.categoryName
+        budgeted = category.budgeted
+    }
+
+    init(income: IncomeCategory) {
+        month = income.month
+        categoryId = income.categoryId
+        categoryName = income.categoryName
+        budgeted = income.budgeted
+    }
+}
+
 /// Edit the budgeted amount for one category-month. Saving writes through
 /// the sync engine (optimistic local-first) and refreshes the month.
-struct EditBudgetAmountSheet: View {
+private struct EditBudgetAmountSheet: View {
     @EnvironmentObject var budgetStore: BudgetStore
     @Environment(\.dismiss) private var dismiss
     @Environment(\.locale) private var locale
-    let category: CategoryBudget
+    let target: EditBudgetAmountTarget
 
     @State private var amountText: String
     @State private var errorMessage: String?
     @State private var isSaving = false
 
-    init(category: CategoryBudget) {
-        self.category = category
-        let initial = category.budgeted == 0
+    init(target: EditBudgetAmountTarget) {
+        self.target = target
+        let initial = target.budgeted == 0
             ? ""
-            : String(format: "%.2f", Double(category.budgeted) / 100.0)
+            : String(format: "%.2f", Double(target.budgeted) / 100.0)
         _amountText = State(initialValue: initial)
     }
 
@@ -2422,7 +2433,7 @@ struct EditBudgetAmountSheet: View {
                         autofocus: true
                     )
                 } header: {
-                    Text(ReportStrings.format("Budgeted in %@", MonthPicker.title(for: category.month, locale: locale), locale: locale, bundle: .main))
+                    Text(ReportStrings.format("Budgeted in %@", MonthPicker.title(for: target.month, locale: locale), locale: locale, bundle: .main))
                 } footer: {
                     if let errorMessage {
                         Text(errorMessage)
@@ -2430,7 +2441,7 @@ struct EditBudgetAmountSheet: View {
                     }
                 }
             }
-            .navigationTitle(category.categoryName)
+            .navigationTitle(target.categoryName)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -2457,8 +2468,8 @@ struct EditBudgetAmountSheet: View {
                     allowNegative: true
                 )
                 try await budgetStore.setBudgetAmount(
-                    month: category.month,
-                    categoryId: category.categoryId,
+                    month: target.month,
+                    categoryId: target.categoryId,
                     amountCents: cents
                 )
                 dismiss()
@@ -2472,52 +2483,119 @@ struct EditBudgetAmountSheet: View {
 
 struct MonthPicker: View {
     @Binding var selectedMonth: String
-    /// The selected month's note (GH #567). It lives in this menu rather than
-    /// its own toolbar button; the note text doubles as the "has a note" indicator.
-    let note: EntityNote
-    let onEditNote: () -> Void
     @Environment(\.locale) private var locale
+    @State private var isShowingMonthGrid = false
+    @State private var displayedYear = Calendar.current.component(.year, from: Date())
 
     var body: some View {
-        Menu {
-            if note.supported {
-                Section {
-                    Button(action: onEditNote) {
-                        if note.isEmpty {
-                            Label("Add Note", systemImage: "note.text.badge.plus")
-                        } else {
-                            Label("Edit Note", systemImage: "note.text")
-                            Text(note.text)
-                        }
-                    }
-                    .accessibilityIdentifier("budget.monthNote")
-                }
-            }
-            Picker("Month", selection: $selectedMonth) {
-                ForEach(monthOptions, id: \.self) { month in
-                    Text(Self.title(for: month, locale: locale)).tag(month)
-                }
-            }
+        Button {
+            displayedYear = Self.year(fromMonth: selectedMonth)
+            isShowingMonthGrid = true
         } label: {
-            Text(Self.shortTitle(for: selectedMonth, locale: locale))
-                .font(.headline)
-                .lineLimit(1)
+            HStack(spacing: 6) {
+                Text(Self.shortTitle(for: selectedMonth, locale: locale))
+                    .font(.headline)
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.caption.weight(.semibold))
+            }
+            .contentShape(.rect)
         }
-        // The abbreviation is a layout constraint, not what the month is
-        // called — VoiceOver still reads it in full.
+        // Keep the month fully spoken even though the toolbar uses an abbreviation.
         .accessibilityLabel(Self.title(for: selectedMonth, locale: locale))
+        .accessibilityHint("Choose a month")
+        .popover(isPresented: $isShowingMonthGrid, arrowEdge: .top) {
+            monthGrid
+                .presentationCompactAdaptation(.popover)
+        }
     }
 
-    /// Next month back through the prior year, newest first, padded with the
-    /// selection itself when swiping has moved outside that window.
-    private var monthOptions: [String] {
-        let current = BudgetView.currentMonthString()
-        var months = (-12...1).map { BudgetView.shiftMonth(current, by: $0) }
-        if !months.contains(selectedMonth) {
-            months.append(selectedMonth)
-            months.sort()
+    private var monthGrid: some View {
+        VStack(spacing: 14) {
+            HStack {
+                Button {
+                    displayedYear -= 1
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .frame(width: 40, height: 36)
+                        .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Previous year")
+                .accessibilityIdentifier("budget.monthPicker.previousYear")
+
+                Spacer(minLength: 8)
+
+                Text(String(displayedYear))
+                    .font(.headline.monospacedDigit())
+                    .accessibilityIdentifier("budget.monthPicker.year")
+
+                Spacer(minLength: 8)
+
+                Button {
+                    displayedYear += 1
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .frame(width: 40, height: 36)
+                        .contentShape(.rect)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Next year")
+                .accessibilityIdentifier("budget.monthPicker.nextYear")
+            }
+
+            LazyVGrid(
+                columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4),
+                spacing: 8
+            ) {
+                ForEach(1...12, id: \.self) { month in
+                    let monthKey = Self.monthKey(year: displayedYear, month: month)
+                    let isSelected = selectedMonth == monthKey
+
+                    Button {
+                        selectedMonth = monthKey
+                        isShowingMonthGrid = false
+                    } label: {
+                        Text(Self.monthSymbol(year: displayedYear, month: month, locale: locale))
+                            .font(.subheadline.weight(isSelected ? .semibold : .regular))
+                            .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
+                            .frame(maxWidth: .infinity, minHeight: 40)
+                            .background {
+                                RoundedRectangle(cornerRadius: 8)
+                                    .fill(isSelected ? Color.accentColor.opacity(0.16) : Color.clear)
+                            }
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 8)
+                                    .strokeBorder(
+                                        isSelected ? Color.accentColor.opacity(0.35) : Color.clear,
+                                        lineWidth: 1
+                                    )
+                            }
+                            .contentShape(.rect)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(Self.title(for: monthKey, locale: locale))
+                    .accessibilityIdentifier("budget.monthPicker.month.\(monthKey)")
+                }
+            }
         }
-        return months.reversed()
+        .padding(16)
+        .frame(width: 320)
+    }
+
+    nonisolated static func year(fromMonth month: String) -> Int {
+        Int(month.split(separator: "-").first ?? "") ?? Calendar.current.component(.year, from: Date())
+    }
+
+    nonisolated static func monthKey(year: Int, month: Int) -> String {
+        String(format: "%04d-%02d", year, month)
+    }
+
+    nonisolated static func monthSymbol(year: Int, month: Int, locale: Locale) -> String {
+        guard let date = date(fromMonth: monthKey(year: year, month: month)) else {
+            return monthKey(year: year, month: month)
+        }
+        return formatter(template: "MMM", locale: locale).string(from: date)
     }
 
     nonisolated static func title(for month: String, locale: Locale = .autoupdatingCurrent) -> String {

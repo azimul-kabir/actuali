@@ -1,8 +1,7 @@
 import XCTest
 
-/// Reorder mode on the Budget tab: Reorder Items in the options menu
-/// shows a drag handle on every category and group, and dragging a handle moves it within
-/// or between groups. The new order is saved when the finger lifts.
+/// Reorder mode lives in the Actuali-mark menu. It shows a drag handle on
+/// every category and group, and saves the new order when the finger lifts.
 final class CategoryReorderModeUITests: XCTestCase {
     @MainActor private func launch(style: String = "clean", hideSpent: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
@@ -20,15 +19,16 @@ final class CategoryReorderModeUITests: XCTestCase {
     }
 
     @MainActor private func enterReorderMode(_ app: XCUIApplication) {
-        let menu = app.buttons["Budget options"]
+        let menu = app.buttons["Actuali menu"]
         XCTAssertTrue(menu.waitForExistence(timeout: 10))
         menu.tap()
+        // Labels, not identifiers: iOS 27 drops identifiers on menu items.
         let reorder = app.buttons["Reorder Items"]
         if !reorder.waitForExistence(timeout: 5) {
             // The menu occasionally misses the first tap on a cold launch.
             menu.tap()
         }
-        XCTAssertTrue(reorder.waitForExistence(timeout: 5), "the options menu offers Reorder Items")
+        XCTAssertTrue(reorder.waitForExistence(timeout: 5), "the Actuali menu offers Reorder Items")
         reorder.tap()
         XCTAssertTrue(handle(app, "Groceries").waitForExistence(timeout: 5), "reorder mode shows a handle on each category")
     }
@@ -156,18 +156,38 @@ final class CategoryReorderModeUITests: XCTestCase {
         }
         let handles = app.descendants(matching: .any)
             .matching(NSPredicate(format: "identifier BEGINSWITH %@", "reorder.groupHandle."))
+        // The AX tree can list the same handle twice on iOS 27; without this
+        // dedupe `above` and `last` resolve to one element and compare equal
+        // however far the drag moved it.
+        var seen = Set<String>()
         let visible = (0..<handles.count).map(handles.element(boundBy:))
-            .filter(\.isHittable)
+            .filter { !$0.frame.isEmpty && $0.isHittable && seen.insert($0.identifier).inserted }
             .sorted { $0.frame.minY < $1.frame.minY }
         XCTAssertGreaterThanOrEqual(visible.count, 2, "two group handles are visible at the bottom")
         guard visible.count >= 2, let last = visible.last else { return }
         let above = visible[visible.count - 2]
         let lastId = last.identifier
+        // Capture both identifiers before the drag: the elements are
+        // index-based queries, so after a reorder `above` can resolve to a
+        // different row and compare the moved row with itself.
+        let aboveId = above.identifier
+        XCTAssertNotEqual(lastId, aboveId, "the two handles must be different groups")
         drag(last, to: above)
         sleep(2)
-        let moved = app.descendants(matching: .any)[lastId]
-        let other = app.descendants(matching: .any)[above.identifier]
-        XCTAssertTrue(moved.exists && other.exists)
-        XCTAssertLessThan(moved.frame.minY, other.frame.minY, "the bottom group should now sit above its neighbour")
+        // Resolve the on-screen copy, as the dedupe did: the same handle can
+        // appear twice and the first copy may be the off-screen one.
+        // Identifiers were captured before the drag, and on-screenCopy prefers
+        // a hittable copy; after the drop neither row may be hittable, so it
+        // falls back to the drawn copy with a real frame.
+        guard let moved = onScreenCopy(app.descendants(matching: .any).matching(identifier: lastId)),
+              let other = onScreenCopy(app.descendants(matching: .any).matching(identifier: aboveId)) else {
+            XCTFail("both group handles stay on screen after the drag")
+            return
+        }
+        XCTAssertLessThan(
+            moved.frame.minY, other.frame.minY,
+            "the bottom group (\(lastId), y \(moved.frame.minY)) should now sit above "
+                + "(\(aboveId), y \(other.frame.minY))"
+        )
     }
 }

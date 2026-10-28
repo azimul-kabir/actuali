@@ -44,11 +44,13 @@ struct AddTransactionView: View {
 
     @State private var isLoading = false
     @State private var errorMessage: String?
+    @State private var scheduleConfirmation: String?
     @State private var userPickedCategory = false
     @State private var automaticCategoryPreview: BudgetStore.AutomaticCategoryPreview?
     @State private var nearbyPayees: [NearbyPayee] = []
     @State private var showPayeePicker = false
     @State private var showCategoryPicker = false
+    @State private var showAccountPicker = false
     @State private var saveLocation = true
     @State private var splitLines: [BudgetStore.SplitLineForm] = []
     /// True while the edit form's "Remove Split" is toggled on an existing
@@ -402,9 +404,8 @@ struct AddTransactionView: View {
         Task { @MainActor in
             guard let categoryId = try? await budgetStore.payeeHistoryCategoryId(
                 forPayeeId: payeeId
-            ) else { return }
-            guard !userPickedCategory,
-                  matchingPayee(for: payeeName)?.id == payeeId else { return }
+            ), !userPickedCategory,
+            matchingPayee(for: payeeName)?.id == payeeId else { return }
             selectedCategoryId = categoryId
         }
     }
@@ -574,13 +575,23 @@ struct AddTransactionView: View {
                 .listRowSeparator(.hidden, edges: .all)
 
                 Section {
-                    Picker(selection: $selectedAccountId) {
-                        ForEach(orderedOpenAccounts) { account in
-                            Text(account.name).tag(account.id)
-                        }
+                    Button {
+                        dismissKeyboard()
+                        showAccountPicker = true
                     } label: {
-                        Label(String(localized: AddTransactionLocalization.account, locale: locale), systemImage: "building.columns")
+                        HStack {
+                            Label(String(localized: AddTransactionLocalization.account, locale: locale), systemImage: "building.columns")
+                            Spacer()
+                            Text(budgetStore.accounts.first { $0.id == selectedAccountId }?.name ?? "")
+                                .foregroundStyle(.secondary)
+                            Image(systemName: "chevron.right")
+                                .font(.footnote.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                                .accessibilityHidden(true)
+                        }
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
                     .accessibilityIdentifier("addTransaction.account")
                     .onChange(of: selectedAccountId) { oldValue, newValue in
                         if transferToAccountId == newValue {
@@ -675,6 +686,10 @@ struct AddTransactionView: View {
                 }
 
                 Section {
+                    // Above the field, not below: the keyboard's Done accessory
+                    // floats over whatever sits directly under the focused
+                    // field and swallows taps aimed at the chips.
+                    TagSuggestionBar(text: $notes, availableTags: budgetStore.tags)
                     // One line while the note is short — an empty three-line
                     // box only pushes the save button off screen —
                     // growing as the text needs it, up to six.
@@ -699,17 +714,21 @@ struct AddTransactionView: View {
                             .accessibilityIdentifier("addTransaction.notesClear")
                         }
                     }
-                    TagSuggestionBar(text: $notes, availableTags: budgetStore.tags)
                     // Links in the note stay openable while the text is a
                     // TextField (GH #190) — this form doubles as the only
                     // full view of a transaction's note.
                     NoteLinkRows(text: notes)
                 }
 
-                if let error = errorMessage {
+                if errorMessage != nil || scheduleConfirmation != nil {
                     Section {
-                        Text(error)
-                            .foregroundStyle(.red)
+                        if let error = errorMessage {
+                            Text(error)
+                                .foregroundStyle(.red)
+                        } else if let scheduleConfirmation {
+                            Label(scheduleConfirmation, systemImage: "checkmark.circle")
+                                .foregroundStyle(.green)
+                        }
                     }
                 }
 
@@ -743,11 +762,30 @@ struct AddTransactionView: View {
                         }
                     }
                     .disabled(saveDisabled)
+                    // Keep the separator between the main action and Schedule
+                    // aligned to the full row width, rather than the centered label.
+                    .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
+                    .alignmentGuide(.listRowSeparatorTrailing) { $0[.trailing] }
                     // Hardware-keyboard commit, for the iPad case where the
                     // form is filled without ever leaving the keys. Return on
                     // its own belongs to the focused field; ⌘Return is the
                     // whole form. Inert while the save is disabled.
                     .keyboardShortcut(.return, modifiers: .command)
+
+                    if canScheduleTransaction {
+                        Button(action: { Task { await scheduleTransaction() } }) {
+                            HStack {
+                                Spacer()
+                                Text("Schedule")
+                                    .fontWeight(.semibold)
+                                Spacer()
+                            }
+                        }
+                        .disabled(saveDisabled)
+                        .alignmentGuide(.listRowSeparatorLeading) { $0[.leading] }
+                        .alignmentGuide(.listRowSeparatorTrailing) { $0[.trailing] }
+                        .accessibilityIdentifier("addTransaction.schedule")
+                    }
                 }
 
                 // Cancel sits under the save button rather than in the
@@ -786,6 +824,12 @@ struct AddTransactionView: View {
                     userPickedCategory = true
                 }
             }
+            .navigationDestination(isPresented: $showAccountPicker) {
+                AccountPickerView(
+                    selectedAccountId: $selectedAccountId,
+                    accounts: orderedOpenAccounts
+                )
+            }
             .navigationTitle(canDismiss ? (isEditing ? "Edit Transaction" : "Add Transaction") : "")
             .navigationBarTitleDisplayMode(canDismiss ? .automatic : .inline)
             .listSectionSpacing(.compact)
@@ -812,6 +856,11 @@ struct AddTransactionView: View {
                     try await Task.sleep(for: .milliseconds(300))
                 } catch { return }
                 await applyAutomaticCategory(for: input)
+            }
+            .onChange(of: amount) { _, newValue in
+                if !newValue.isEmpty {
+                    scheduleConfirmation = nil
+                }
             }
         }
     }
@@ -966,8 +1015,7 @@ struct AddTransactionView: View {
         isTransfer: Bool,
         hasTransferPartner: Bool
     ) -> Bool {
-        guard !isEditingTransfer, !isConvertingToTransfer else { return false }
-        guard !isEditingSplitParent || splitLoaded else { return false }
+        guard !isEditingTransfer, !isConvertingToTransfer, !isEditingSplitParent || splitLoaded else { return false }
         return !isTransfer || hasTransferPartner
     }
 
@@ -1019,6 +1067,33 @@ struct AddTransactionView: View {
             : String(localized: AddTransactionLocalization.addTransaction, locale: locale)
     }
 
+    /// Pure eligibility gate, shared with unit tests so each exclusion stays covered.
+    nonisolated static func canSchedule(
+        isEditing: Bool,
+        hasSaveOverride: Bool,
+        reviewRequirements: [PendingImportReviewRequirement],
+        hasSplits: Bool,
+        date: Date,
+        today: Date = Date()
+    ) -> Bool {
+        !isEditing
+            && !hasSaveOverride
+            && reviewRequirements.isEmpty
+            && !hasSplits
+            && FutureTransactionSchedule.isFutureDate(date, relativeTo: today)
+    }
+
+    /// Scheduling is only offered for new, future, non-split transactions.
+    private var canScheduleTransaction: Bool {
+        Self.canSchedule(
+            isEditing: isEditing,
+            hasSaveOverride: saveOverride != nil,
+            reviewRequirements: reviewRequirements,
+            hasSplits: showsSplitEntry || !splitLines.isEmpty,
+            date: date
+        )
+    }
+
     private var saveDisabled: Bool {
         if isLoading || amount.isEmpty {
             return true
@@ -1068,8 +1143,57 @@ struct AddTransactionView: View {
                 // next entry and route to the saved transaction's account
                 // list so every add flow lands on the relevant list.
                 resetForm()
-                NotificationRouter.shared.pendingAccountNavigation = selectedAccountId
+                NotificationRouter.shared.pendingSavedTransactionAccount = selectedAccountId
             }
+        } catch {
+            errorMessage = PendingImportApprover.localizedErrorMessage(
+                for: error, locale: locale
+            )
+        }
+    }
+
+    private func scheduleTransaction() async {
+        guard canScheduleTransaction, !isLoading else { return }
+        isLoading = true
+        errorMessage = nil
+        defer { isLoading = false }
+
+        await applyAutomaticCategory(for: automaticCategoryInput)
+        // Recheck eligibility after async category resolution before snapshotting the form.
+        guard canScheduleTransaction else { return }
+        let form = currentForm()
+
+        do {
+            let payeeId: String?
+            if form.type == .transfer {
+                guard let destinationId = form.transferToAccountId,
+                      let transferPayee = budgetStore.transferPayee(forAccountId: destinationId) else {
+                    throw BudgetStoreError.transferPayeeMissing
+                }
+                payeeId = transferPayee.id
+            } else {
+                payeeId = try await budgetStore.resolvePayeeId(
+                    name: form.payeeName.trimmingCharacters(in: .whitespacesAndNewlines),
+                    editing: nil
+                )
+            }
+
+            let dateText = form.date.formatted(
+                Date.FormatStyle(date: .abbreviated, time: .omitted, locale: locale)
+            )
+            let fields = try FutureTransactionSchedule.fields(
+                from: form,
+                payeeId: payeeId,
+                offBudgetAccountIds: budgetStore.offBudgetAccountIds
+            )
+            try await budgetStore.createSchedule(fields: fields)
+
+            // Keep the confirmation visible in both tab-hosted and presented flows.
+            resetForm()
+            scheduleConfirmation = String(
+                localized: "Schedule created for \(dateText)",
+                locale: locale
+            )
         } catch {
             errorMessage = PendingImportApprover.localizedErrorMessage(
                 for: error, locale: locale
@@ -1107,6 +1231,7 @@ struct AddTransactionView: View {
         date = Date()
         cleared = false
         errorMessage = nil
+        scheduleConfirmation = nil
         splitLines = []
         unsplitRequested = false
         // A fresh form suggests categories from payee history again — a
@@ -1287,10 +1412,10 @@ private struct SplitLineRow: View {
                 )
                 .environmentObject(budgetStore)
             }
+            TagSuggestionBar(text: $line.notes, availableTags: budgetStore.tags)
             TextField(String(localized: AddTransactionLocalization.optionalNotes, locale: locale), text: $line.notes)
                 .font(.subheadline)
                 .accessibilityIdentifier("addTransaction.splitLine.notes")
-            TagSuggestionBar(text: $line.notes, availableTags: budgetStore.tags)
             NoteLinkRows(text: line.notes)
                 .font(.subheadline)
         }
@@ -1377,6 +1502,32 @@ struct AmountInputField: UIViewRepresentable {
         }
     }
 
+    /// The bar's host view. The iOS 26 prominent Done pill needs about 400pt
+    /// beside the symbol keys, so on narrower bars the keys tighten up and the
+    /// pill stays on screen (GH #746). The accessory view is sized to the
+    /// keyboard, which follows the window in iPad split view, so read the
+    /// width here rather than the screen's.
+    final class AccessoryBarView: UIView {
+        var keyButtons: [UIButton] = []
+        private var keyInset: CGFloat?
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            let inset: CGFloat = if #available(iOS 26, *), bounds.width < 410 {
+                6
+            } else {
+                10
+            }
+            guard inset != keyInset else { return }
+            keyInset = inset
+            for button in keyButtons {
+                button.configuration?.contentInsets = NSDirectionalEdgeInsets(
+                    top: 8, leading: inset, bottom: 8, trailing: inset
+                )
+            }
+        }
+    }
+
     func makeUIView(context: Context) -> UITextField {
         let field = AutofocusTextField()
         field.wantsAutofocus = autofocus
@@ -1403,6 +1554,7 @@ struct AmountInputField: UIViewRepresentable {
         // field, or to do arithmetic in it.
         let toolbar = UIToolbar(frame: CGRect(x: 0, y: 0, width: 100, height: 44))
         var items: [UIBarButtonItem] = []
+        var keyButtons: [UIButton] = []
         if allowsNegative || onToggleSign != nil {
             // The decimal pad has no minus key, so this button is the only
             // keyboard affordance for flipping an amount's sign.
@@ -1413,14 +1565,21 @@ struct AmountInputField: UIViewRepresentable {
             )
             context.coordinator.signButton = item.customView as? UIButton
             context.coordinator.signButton?.isEnabled = signToggleEnabled
+            if let button = item.customView as? UIButton {
+                keyButtons.append(button)
+            }
             items.append(item)
         }
         for op in Coordinator.Operator.allCases {
-            items.append(Self.keyItem(
+            let item = Self.keyItem(
                 symbol: op.symbolName,
                 label: op.accessibilityLabel,
                 target: context.coordinator, action: op.selector
-            ))
+            )
+            if let button = item.customView as? UIButton {
+                keyButtons.append(button)
+            }
+            items.append(item)
         }
         items.append(UIBarButtonItem(barButtonSystemItem: .flexibleSpace, target: nil, action: nil))
         // `.prominent` is iOS 26+; `.done` is the pre-26 equivalent emphasis.
@@ -1439,9 +1598,10 @@ struct AmountInputField: UIViewRepresentable {
         // toolbar with a gap we host it in a taller, transparent container and
         // pin the toolbar to the top — the leftover strip below is the space.
         let gap: CGFloat = 4
-        let container = UIView(
+        let container = AccessoryBarView(
             frame: CGRect(x: 0, y: 0, width: toolbar.frame.width, height: toolbar.frame.height + gap)
         )
+        container.keyButtons = keyButtons
         container.backgroundColor = .clear
         toolbar.frame = CGRect(x: 0, y: 0, width: container.frame.width, height: toolbar.frame.height)
         toolbar.autoresizingMask = [.flexibleWidth]
@@ -1993,20 +2153,26 @@ struct CategoryPickerView: View {
 
     private var filteredGroups: [CategoryGroup] {
         let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            return budgetStore.categoryGroups.filter { !$0.hidden }
-        }
-        return budgetStore.categoryGroups.compactMap { group in
-            let matches = group.categories.filter { category in
-                !category.hidden &&
-                    (category.name.localizedCaseInsensitiveContains(trimmed) ||
-                        group.name.localizedCaseInsensitiveContains(trimmed))
+        let groups: [CategoryGroup] = if trimmed.isEmpty {
+            budgetStore.categoryGroups.filter { !$0.hidden }
+        } else {
+            budgetStore.categoryGroups.compactMap { group -> CategoryGroup? in
+                let matches = group.categories.filter { category in
+                    !category.hidden &&
+                        (category.name.localizedCaseInsensitiveContains(trimmed) ||
+                            group.name.localizedCaseInsensitiveContains(trimmed))
+                }
+                guard !matches.isEmpty else { return nil }
+                var copy = group
+                copy.categories = matches
+                return copy
             }
-            guard !matches.isEmpty else { return nil }
-            var copy = group
-            copy.categories = matches
-            return copy
         }
+        return Self.incomeLast(groups)
+    }
+
+    nonisolated static func incomeLast(_ groups: [CategoryGroup]) -> [CategoryGroup] {
+        groups.filter { !$0.isIncome } + groups.filter(\.isIncome)
     }
 }
 

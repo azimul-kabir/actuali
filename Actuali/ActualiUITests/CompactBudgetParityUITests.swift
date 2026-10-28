@@ -19,8 +19,7 @@ final class CompactBudgetParityUITests: XCTestCase {
         ensureGroupExpanded("Essentials", revealing: details, in: app)
         XCTAssertTrue(details.waitForExistence(timeout: 10))
         XCTAssertTrue(app.buttons["budgetFilter-all"].exists)
-        XCTAssertTrue(app.buttons["Previous month"].exists)
-        XCTAssertTrue(app.buttons["Next month"].exists)
+        XCTAssertTrue(app.buttons["budget.monthStepper"].exists)
 
         details.press(forDuration: 1)
         let allTransactions = app.buttons["All Transactions"]
@@ -28,15 +27,20 @@ final class CompactBudgetParityUITests: XCTestCase {
         allTransactions.tap()
         XCTAssertTrue(app.navigationBars["Groceries"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["All Time"].exists)
-        app.navigationBars.buttons["Budget"].tap()
+        tapBackButton(app)
 
-        let optionsMenu = app.buttons["Budget options"]
-        XCTAssertTrue(optionsMenu.waitForExistence(timeout: 10),
-                      "Compact keeps the shared category creation menu")
-        optionsMenu.tap()
+        let actualiMenu = app.buttons["budget.actionsMenu"]
+        XCTAssertTrue(actualiMenu.waitForExistence(timeout: 10),
+                      "category creation lives in the Actuali menu")
+        actualiMenu.tap()
         XCTAssertTrue(app.buttons["New Category"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["New Category Group"].exists)
-        app.buttons["New Category Group"].tap()
+        // The menu shows "New Group"; its accessibility label is "New
+        // Category Group" on OS versions that honour it.
+        let newGroup = app.buttons.matching(
+            NSPredicate(format: "label IN %@", ["New Group", "New Category Group"])
+        ).firstMatch
+        XCTAssertTrue(newGroup.exists)
+        newGroup.tap()
         XCTAssertTrue(app.navigationBars["New Group"].waitForExistence(timeout: 5))
         app.buttons["Cancel"].tap()
 
@@ -68,7 +72,7 @@ final class CompactBudgetParityUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Groceries"].waitForExistence(timeout: 5),
                       "Spent opens the category's transaction destination")
         XCTAssertTrue(app.searchFields.firstMatch.waitForExistence(timeout: 5))
-        app.navigationBars.buttons["Budget"].tap()
+        tapBackButton(app)
 
         let balance = app.buttons.matching(
             NSPredicate(format: "label BEGINSWITH 'Move money from Groceries'")
@@ -193,6 +197,7 @@ final class CompactBudgetParityUITests: XCTestCase {
             "-loadDemoData",
             "-loadTrackingDemoData",
             "-budgetDisplayStyle", "compact",
+            "-collapsedBudgetGroups", "",
             "-initialTab", "1",
         ]
         app.launch()
@@ -204,7 +209,7 @@ final class CompactBudgetParityUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["Salary"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["All Time"].exists,
                       "the Income name opens all-time transactions")
-        app.navigationBars.buttons["Budget"].tap()
+        tapBackButton(app)
 
         let received = app.buttons.matching(
             NSPredicate(format: "label BEGINSWITH 'Transactions for Salary in '")
@@ -222,7 +227,8 @@ final class CompactBudgetParityUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchArguments = [
             "-loadDemoData", "-budgetDisplayStyle", "compact",
-            "-showHiddenCategories", "YES", "-initialTab", "1",
+            "-showHiddenCategories", "YES", "-collapsedBudgetGroups", "",
+            "-initialTab", "1",
         ]
         app.launch()
 
@@ -287,6 +293,15 @@ final class CompactBudgetParityUITests: XCTestCase {
             group.tap()
         }
         XCTAssertTrue(element.waitForExistence(timeout: 5))
+    }
+
+    /// The system back button is identified as "BackButton" on iOS 26 and
+    /// newer and only labelled "Back" on iOS 18, so match either.
+    @MainActor
+    private func tapBackButton(_ app: XCUIApplication) {
+        app.navigationBars.buttons.matching(
+            NSPredicate(format: "identifier == 'BackButton' OR label == 'Back'")
+        ).firstMatch.tap()
     }
 
     @MainActor

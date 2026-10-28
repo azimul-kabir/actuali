@@ -38,21 +38,43 @@ final class HomeScreenQuickActionsUITests: XCTestCase {
         }
 
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        var visibleIcon: XCUIElement?
-        // SpringBoard also exposes off-screen icons with zero-sized frames.
+        let icons = springboard.icons.matching(identifier: "Actuali")
+        let screen = springboard.frame
+        // SpringBoard exposes off-page icons with zero or off-screen frames,
+        // and reading an icon attribute mid-animation fails the test outright:
+        // isHittable reports "Activation point invalid" while the app zooms back
+        // into its icon, and .frame on an element that vanished first reports
+        // "No matches found". snapshot() throws instead, so wait for an on-screen
+        // frame that holds still across two polls, then press at that frame.
+        func settledIconFrame() -> CGRect? {
+            var lastFrame: CGRect?
+            for _ in 0..<10 {
+                let frame = icons.allElementsBoundByIndex
+                    .compactMap { (try? $0.snapshot())?.frame }
+                    .first { !$0.isEmpty && screen.contains($0) }
+                if let frame, frame == lastFrame {
+                    return frame
+                }
+                lastFrame = frame
+                Thread.sleep(forTimeInterval: 0.5)
+            }
+            return nil
+        }
+        var iconFrame: CGRect?
         for _ in 0..<4 {
-            visibleIcon = springboard.icons.matching(identifier: "Actuali")
-                .allElementsBoundByIndex.first { $0.isHittable }
-            if visibleIcon != nil {
+            iconFrame = settledIconFrame()
+            if iconFrame != nil {
                 break
             }
             springboard.swipeLeft()
         }
-        guard let icon = visibleIcon else {
+        guard let iconFrame else {
             XCTFail("Actuali Home Screen icon not reachable: \(springboard.debugDescription)")
             return
         }
-        icon.press(forDuration: 1.2)
+        springboard.coordinate(withNormalizedOffset: .zero)
+            .withOffset(CGVector(dx: iconFrame.midX, dy: iconFrame.minY + iconFrame.height * 0.4))
+            .press(forDuration: 1.2)
         let shortcut = springboard.descendants(matching: .any).matching(
             NSPredicate(format: "label == %@", "Add Transaction")
         ).firstMatch
@@ -68,12 +90,29 @@ final class HomeScreenQuickActionsUITests: XCTestCase {
     @MainActor
     private func setStartPage(_ page: String, in app: XCUIApplication) throws -> String {
         if app.keyboards.firstMatch.exists {
-            app.buttons["Done"].tap()
+            app.buttons["Done"].firstMatch.tap()
+            if !app.keyboards.firstMatch.waitForNonExistence(timeout: 3) {
+                app.buttons["Done"].firstMatch.tap()
+            }
+            // The tab bar sits behind the keyboard; tapping More before it
+            // finishes dismissing lands on the keyboard instead.
+            XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 5),
+                          "the keyboard stayed up over the tab bar")
         }
-        app.tabBars.buttons["More"].tap()
+        let more = app.tabBars.buttons["More"]
+        more.tap()
+        if !more.wait(for: \.isSelected, toEqual: true, timeout: 3) {
+            more.tap()
+        }
+        XCTAssertTrue(more.wait(for: \.isSelected, toEqual: true, timeout: 5),
+                      "the More tab did not open")
         if !app.navigationBars["Display"].exists {
             let display = app.buttons["Display"]
-            XCTAssertTrue(display.waitForExistence(timeout: 5))
+            for _ in 0..<6 where !display.exists {
+                app.swipeUp()
+            }
+            XCTAssertTrue(display.waitForExistence(timeout: 5),
+                          "Display row missing after opening More: \(app.debugDescription)")
             display.tap()
         }
         let picker = app.buttons.matching(
