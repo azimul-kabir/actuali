@@ -2877,6 +2877,17 @@ final class BudgetStore: ObservableObject {
             let fetchedGroups = try await openedDb.fetchCategoryGroups()
             let fetchedPayees = try await openedDb.fetchPayees()
             let fetchedTags = await (try? openedDb.fetchTags(includeHidden: true)) ?? []
+            // The widget snapshot published below lists upcoming bills, so
+            // schedules must be in hand before it is written.
+            let fetchedSchedules: ([ScheduleSummary], [String: ScheduleStatus], [String: Set<DayDate>])?
+            let fetchedScheduleError: String?
+            do {
+                fetchedSchedules = try await fetchSchedules(database: openedDb, upcomingLength: fetchedUpcomingLength)
+                fetchedScheduleError = nil
+            } catch {
+                fetchedSchedules = nil
+                fetchedScheduleError = error.localizedDescription
+            }
             let currentMonth = currentMonthString()
             let displayedMonth = budgetMonthRequestGeneration == monthRequestGenerationBeforeLoad
                 ? lastViewedBudgetMonth ?? currentMonth
@@ -2972,6 +2983,9 @@ final class BudgetStore: ObservableObject {
                 currentBudgetMonth = fetchedBudgetMonth
             }
             widgetBudgetMonth = fetchedWidgetBudgetMonth
+            publishSchedules(fetchedSchedules ?? ([], [:], [:]))
+            schedulesLoaded = true
+            scheduleLoadError = fetchedScheduleError
             goalTemplatesEnabled = fetchedGoalTemplatesFlag
             goalTemplatesUIEnabled = fetchedGoalTemplatesUIFlag
             tags = fetchedTags
@@ -3938,6 +3952,60 @@ final class BudgetStore: ObservableObject {
             try await syncClient.setCategoryGroupHidden(id: id, hidden: hidden)
         } catch {
             throw BudgetStoreError.categoryUpdateFailed(error.localizedDescription)
+        }
+
+        await refreshDataOnly()
+        await fetchBudgetMonth(month)
+    }
+
+    /// Whether deleting a category needs a transfer destination. If this
+    /// preflight fails, the UI should fail closed rather than risk discarding
+    /// transaction history or a budget balance.
+    func categoryRequiresTransfer(id: String) async throws -> Bool {
+        guard let database else { throw BudgetStoreError.syncNotConfigured }
+        return try await database.categoryRequiresTransfer(id: id)
+    }
+
+    func categoryGroupRequiresTransfer(id: String) async throws -> Bool {
+        guard let database else { throw BudgetStoreError.syncNotConfigured }
+        let groups = try await database.fetchCategoryGroups()
+        guard let group = groups.first(where: { $0.id == id }) else {
+            throw BudgetDatabase.CategoryWriteError.groupNotFound
+        }
+        for category in group.categories {
+            if try await database.categoryRequiresTransfer(id: category.id) {
+                return true
+            }
+        }
+        return false
+    }
+
+    func deleteCategory(id: String, transferToId: String?, month: String) async throws {
+        guard let syncClient else { throw BudgetStoreError.syncNotConfigured }
+        do {
+            try await syncClient.deleteCategory(id: id, transferToId: transferToId)
+        } catch let error as BudgetDatabase.CategoryWriteError {
+            throw error
+        } catch let error as BudgetStoreError {
+            throw error
+        } catch {
+            throw BudgetStoreError.categoryUpdateFailed(error.localizedDescription)
+        }
+
+        await refreshDataOnly()
+        await fetchBudgetMonth(month)
+    }
+
+    func deleteCategoryGroup(id: String, transferToId: String?, month: String) async throws {
+        guard let syncClient else { throw BudgetStoreError.syncNotConfigured }
+        do {
+            try await syncClient.deleteCategoryGroup(id: id, transferToId: transferToId)
+        } catch let error as BudgetDatabase.CategoryWriteError {
+            throw error
+        } catch let error as BudgetStoreError {
+            throw error
+        } catch {
+            throw BudgetStoreError.categoryGroupUpdateFailed(error.localizedDescription)
         }
 
         await refreshDataOnly()
