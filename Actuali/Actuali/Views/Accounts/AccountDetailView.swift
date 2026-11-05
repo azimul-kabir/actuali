@@ -27,6 +27,8 @@ struct AccountDetailView: View {
     /// paged transaction list, which only holds a window of the history.
     @State private var loanTotalPaid: Int?
     @State private var searchText = ""
+    @State private var isTransactionSearchActive = false
+    @FocusState private var isTransactionSearchFocused: Bool
     @State private var showingAddTransaction = false
     @State private var showingReconcile = false
     @State private var showingWalletImport = false
@@ -131,7 +133,7 @@ struct AccountDetailView: View {
         scheduleLoadFailed: Bool,
         showUpcomingSchedules: Bool = true
     ) -> Bool {
-        isSearching || statusFilter != .all || !showUpcomingSchedules
+        isSearching || !statusFilter.includesUpcomingSchedules || !showUpcomingSchedules
             || (schedulesLoaded && !hasUpcomingSchedules && !scheduleLoadFailed)
     }
 
@@ -434,10 +436,16 @@ struct AccountDetailView: View {
         )
         breakdownRow(
             config.kind == .recurring
-                ? String(localized: "Monthly Instalment")
+                ? String(localized: "Contribution Amount")
                 : String(localized: "Deposit Amount"),
             amount: config.amount
         )
+        if config.kind == .recurring {
+            breakdownRow(
+                String(localized: "Contribution Frequency"),
+                value: DepositEditorView.contributionFrequencyLabel(config.contributionFrequency)
+            )
+        }
         breakdownRow(String(localized: "Interest Rate"), value: LoanSummaryRow.percentText(config.annualRatePercent / 100))
         breakdownRow(String(localized: "Compounding"), value: DepositEditorView.compoundingLabel(config.compounding))
         breakdownRow(String(localized: "Opened"), value: config.openedOn.displayText)
@@ -813,7 +821,12 @@ struct AccountDetailView: View {
     }
 
     @ViewBuilder private var transactionSection: some View {
-        if showUpcomingSchedules, searchQuery == nil, budgetStore.transactionStatusFilter == .all {
+        let shouldShowUpcomingSchedules = showUpcomingSchedules
+            && searchQuery == nil && budgetStore.transactionStatusFilter.includesUpcomingSchedules
+        let scheduledEntries = shouldShowUpcomingSchedules && budgetStore.schedulesLoaded
+            ? upcomingScheduleEntries : []
+
+        if shouldShowUpcomingSchedules {
             if budgetStore.scheduleLoadError != nil {
                 Section {
                     Label(
@@ -823,10 +836,10 @@ struct AccountDetailView: View {
                     .foregroundStyle(.secondary)
                 }
             }
-            if budgetStore.schedulesLoaded, !upcomingScheduleEntries.isEmpty {
+            if !scheduledEntries.isEmpty {
                 UpcomingScheduleSections(
-                    entries: upcomingScheduleEntries,
-                    showRunningBalance: showRunningBalance
+                    entries: scheduledEntries,
+                    showRunningBalance: shouldShowRunningBalance
                 )
             }
         }
@@ -866,7 +879,7 @@ struct AccountDetailView: View {
                         isSearching: searchQuery != nil,
                         statusFilter: budgetStore.transactionStatusFilter,
                         schedulesLoaded: budgetStore.schedulesLoaded,
-                        hasUpcomingSchedules: !upcomingScheduleEntries.isEmpty,
+                        hasUpcomingSchedules: !scheduledEntries.isEmpty,
                         scheduleLoadFailed: budgetStore.scheduleLoadError != nil,
                         showUpcomingSchedules: showUpcomingSchedules
                     ) {
@@ -989,7 +1002,13 @@ struct AccountDetailView: View {
         .listSectionSpacing(.compact)
         .readableWidth()
         .navigationTitle(account.name)
-        .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search transactions")
+        .onDemandSearch(
+            text: $searchText,
+            isPresented: $isTransactionSearchActive,
+            isFocused: $isTransactionSearchFocused,
+            prompt: "Search transactions",
+            accessibilityPrefix: "accountDetails"
+        )
         .toolbar {
             accountToolbarContent
             runningBalanceToolbarItem
@@ -1082,6 +1101,13 @@ struct AccountDetailView: View {
         .sheet(item: $selectedStatement) { statement in
             CreditCardStatementDetailView(account: account, statement: statement)
                 .environmentObject(budgetStore)
+        }
+        .onChange(of: account.id) { _, _ in
+            // Search belongs to the selected account; don't carry a hidden filter
+            // or an open search field into the next account in the iPad split view.
+            isTransactionSearchActive = false
+            isTransactionSearchFocused = false
+            searchText = ""
         }
         .task(id: reloadID) {
             let searchChanged = previousSearchText != searchText

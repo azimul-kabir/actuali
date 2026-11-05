@@ -5,6 +5,8 @@ import SwiftUI
 /// Accounts, and a save can tell when All Accounts is already showing.
 private enum AccountsRoute: Hashable {
     case allAccounts
+    case onBudgetTransactions
+    case offBudgetTransactions
     case account(Account)
 }
 
@@ -13,6 +15,8 @@ private enum AccountsRoute: Hashable {
 /// and a stored value would stop matching its row the moment it did.
 private enum AccountSelection: Hashable {
     case allAccounts
+    case onBudgetTransactions
+    case offBudgetTransactions
     case account(String)
 }
 
@@ -499,7 +503,8 @@ struct AccountsListView: View {
                                     title: String(localized: "On Budget"),
                                     total: onBudgetTotal,
                                     isExpanded: isSearchingAccounts ? .constant(true) : $isOnBudgetExpanded,
-                                    allowsCollapse: !isSearchingAccounts && !isReordering
+                                    allowsCollapse: !isSearchingAccounts && !isReordering,
+                                    onShowTransactions: { path.append(.onBudgetTransactions) }
                                 )
                             }
                             .listSectionSeparator(.hidden)
@@ -519,7 +524,8 @@ struct AccountsListView: View {
                                     title: String(localized: "Off Budget"),
                                     total: offBudgetTotal,
                                     isExpanded: isSearchingAccounts ? .constant(true) : $isOffBudgetExpanded,
-                                    allowsCollapse: !isSearchingAccounts && !isReordering
+                                    allowsCollapse: !isSearchingAccounts && !isReordering,
+                                    onShowTransactions: { path.append(.offBudgetTransactions) }
                                 )
                             }
                             .listSectionSeparator(.hidden)
@@ -544,6 +550,14 @@ struct AccountsListView: View {
                             }
                         }
                     }
+                    // Keep native search attached to the List itself so iOS can focus its search field.
+                    .onDemandSearch(
+                        text: $accountSearchText,
+                        isPresented: $isAccountSearchActive,
+                        isFocused: $isAccountSearchFocused,
+                        prompt: "Search Accounts",
+                        accessibilityPrefix: "accounts"
+                    )
                     .environment(\.editMode, .constant(isReordering ? .active : .inactive))
                     // Capped like the transactions this pushes to, so a
                     // narrow-iPad account list doesn't stretch a row's balance
@@ -555,6 +569,8 @@ struct AccountsListView: View {
             .navigationDestination(for: AccountsRoute.self) { route in
                 switch route {
                 case .allAccounts: AccountTransactionsScreen()
+                case .onBudgetTransactions: AccountTransactionsScreen(scope: .onBudget)
+                case .offBudgetTransactions: AccountTransactionsScreen(scope: .offBudget)
                 case .account(let account): AccountTransactionsScreen(account: account)
                 }
             }
@@ -591,7 +607,7 @@ struct AccountsListView: View {
                                     total: onBudgetTotal,
                                     isExpanded: isSearchingAccounts ? .constant(true) : $isOnBudgetExpanded,
                                     allowsCollapse: !isSearchingAccounts && !isReordering,
-                                    totalTrailingPadding: 0
+                                    onShowTransactions: { selection = .onBudgetTransactions }
                                 )
                             }
                             .listSectionSeparator(.hidden)
@@ -612,7 +628,7 @@ struct AccountsListView: View {
                                     total: offBudgetTotal,
                                     isExpanded: isSearchingAccounts ? .constant(true) : $isOffBudgetExpanded,
                                     allowsCollapse: !isSearchingAccounts && !isReordering,
-                                    totalTrailingPadding: 0
+                                    onShowTransactions: { selection = .offBudgetTransactions }
                                 )
                             }
                             .listSectionSeparator(.hidden)
@@ -637,6 +653,13 @@ struct AccountsListView: View {
                             }
                         }
                     }
+                    .onDemandSearch(
+                        text: $accountSearchText,
+                        isPresented: $isAccountSearchActive,
+                        isFocused: $isAccountSearchFocused,
+                        prompt: "Search Accounts",
+                        accessibilityPrefix: "accounts"
+                    )
                     .environment(\.editMode, .constant(isReordering ? .active : .inactive))
                 }
             }
@@ -658,6 +681,10 @@ struct AccountsListView: View {
                     }
                 case .allAccounts:
                     AccountTransactionsScreen()
+                case .onBudgetTransactions:
+                    AccountTransactionsScreen(scope: .onBudget)
+                case .offBudgetTransactions:
+                    AccountTransactionsScreen(scope: .offBudget)
                 case nil:
                     ContentUnavailableView(
                         "No Account Selected",
@@ -719,9 +746,8 @@ struct AccountsListView: View {
         }
     }
 
-    /// Everything both layouts hang off their account list: title, notification
-    /// routing, pull-to-refresh, loading overlay, search.
-    /// Shared so the two layouts can't drift apart.
+    /// Shared presentation for both account-list layouts: margins, empty search
+    /// results, and toolbar items. Search itself stays attached to each List.
     private func withChrome(@ViewBuilder _ content: () -> some View) -> some View {
         Group(content: content)
             // Both layouts' section state lives in @AppStorage, and a write to
@@ -746,41 +772,20 @@ struct AccountsListView: View {
                     ContentUnavailableView.search(text: accountSearchText)
                 }
             }
-            .safeAreaInset(edge: .top, spacing: 0) {
-                if isAccountSearchActive {
-                    HStack(spacing: 8) {
-                        Image(systemName: "magnifyingglass")
-                            .foregroundStyle(.secondary)
-                        TextField(String(localized: "Search Accounts"), text: $accountSearchText)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .submitLabel(.done)
-                            .focused($isAccountSearchFocused)
-                            .accessibilityIdentifier("accounts.searchField")
-                            .onSubmit { isAccountSearchFocused = false }
-                            // Focus after the conditional field joins the view tree.
-                            .task { isAccountSearchFocused = true }
-                        if !accountSearchText.isEmpty {
-                            Button {
-                                accountSearchText = ""
-                                isAccountSearchFocused = true
-                            } label: {
-                                Image(systemName: "xmark.circle.fill")
-                                    .foregroundStyle(.secondary)
-                                    .frame(minWidth: 44, minHeight: 44)
-                                    .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel(String(localized: "Clear Search"))
-                            .accessibilityIdentifier("accounts.searchClear")
-                        }
-                    }
-                    .frame(minHeight: 44)
-                    .padding(.horizontal, 12)
-                    .background(.quaternary, in: Capsule())
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
+            // Searching filters the rows a drag moves among, so reordering and
+            // search stay mutually exclusive (beginReordering clears search).
+            .onChange(of: isAccountSearchActive) { _, active in
+                if active {
+                    finishReordering()
                 }
+            }
+            // The List carrying search leaves with the last account; don't
+            // reopen it with a stale query when accounts come back.
+            .onChange(of: hasNoAccounts) { _, empty in
+                guard empty else { return }
+                isAccountSearchActive = false
+                isAccountSearchFocused = false
+                accountSearchText = ""
             }
             .toolbar {
                 if isReordering {
@@ -790,23 +795,6 @@ struct AccountsListView: View {
                         }
                         .fontWeight(.semibold)
                         .accessibilityIdentifier("accounts.reorderDone")
-                    }
-                }
-                if !isReordering, !hasNoAccounts || isAccountSearchActive {
-                    ToolbarItem(placement: .primaryAction) {
-                        Button {
-                            isAccountSearchActive.toggle()
-                            if !isAccountSearchActive {
-                                isAccountSearchFocused = false
-                                accountSearchText = ""
-                            }
-                        } label: {
-                            Image(systemName: isAccountSearchActive ? "xmark" : "magnifyingglass")
-                        }
-                        .accessibilityLabel(isAccountSearchActive
-                            ? String(localized: "Cancel Search")
-                            : String(localized: "Search Accounts"))
-                        .accessibilityIdentifier("accounts.search")
                     }
                 }
                 if !isReordering {
@@ -1102,27 +1090,29 @@ struct AccountsListView: View {
 private struct AccountTransactionsScreen: View {
     @EnvironmentObject private var budgetStore: BudgetStore
     var account: Account?
+    var scope: AccountTransactionsScope?
 
     var body: some View {
         Group {
             if let account {
                 AccountDetailView(account: account)
             } else {
-                TransactionsListView()
+                TransactionsListView(scope: scope)
+                    .id(scope?.rawValue ?? "all")
             }
         }
         .safeAreaInset(edge: .top, spacing: 0) {
             if budgetStore.showTransactionStatusFilters {
                 TransactionFilterStrip(
                     selection: $budgetStore.transactionStatusFilter,
-                    filters: account?.offBudget == true
+                    filters: account?.offBudget == true || scope == .offBudget
                         ? TransactionStatusFilter.allCases.filter { $0 != .uncategorized }
                         : TransactionStatusFilter.allCases
                 )
             }
         }
-        .task(id: account?.id) {
-            if account?.offBudget == true,
+        .task(id: "\(account?.id ?? "")|\(scope?.rawValue ?? "")") {
+            if account?.offBudget == true || scope == .offBudget,
                budgetStore.transactionStatusFilter == .uncategorized {
                 budgetStore.transactionStatusFilter = .all
             }
@@ -1218,8 +1208,9 @@ struct AccountsSummaryCard: View {
 }
 
 /// Header used for the On Budget, Off Budget, and Closed Accounts sections.
-/// The section name sits on the left, the total is right-aligned, and tapping
-/// anywhere on the header expands/collapses that section.
+/// The budget sections split into two buttons: the title and arrow open that
+/// section's transactions, the total and chevron expand/collapse it. Closed
+/// Accounts has no transactions list, so its whole header collapses.
 struct AccountSectionHeader: View {
     @EnvironmentObject var budgetStore: BudgetStore
     let identifier: String
@@ -1227,70 +1218,116 @@ struct AccountSectionHeader: View {
     let total: Int
     @Binding var isExpanded: Bool
     var allowsCollapse = true
-    /// Extra trailing inset lining the total up with row balances that sit
-    /// left of a NavigationLink disclosure chevron. The split layout's rows
+    var onShowTransactions: (() -> Void)?
+    /// Extra trailing inset lining the Closed total up with row balances that
+    /// sit left of a NavigationLink disclosure chevron. The split layout's rows
     /// carry no chevron, so it passes zero to keep its totals flush too.
     var totalTrailingPadding: CGFloat = 24
 
     var body: some View {
         let totalText = budgetStore.displayBalance(total)
-        Button {
-            isExpanded.toggle()
-        } label: {
-            HStack(spacing: 8) {
-                if identifier == "closed" {
-                    DisclosureChevron(isExpanded: isExpanded)
-                        .frame(width: 12)
-                    sectionTitle
-                }
-                Spacer()
-                Text(totalText)
-                    .font(.headline.weight(.regular))
-                    .foregroundStyle(balanceColor(for: total))
-                    .animatedAmount(totalText)
-                    .padding(.trailing, identifier == "closed" ? totalTrailingPadding : 20)
-                    // Grouped-list headers uppercase their content; fine for
-                    // the title (string headers always rendered that way) but
-                    // it would mangle alphabetic currency symbols ("kr"→"KR").
-                    .textCase(nil)
-                    // One line always: a narrow sidebar wraps "USD 48,800.00"
-                    // onto two lines rather than shrinking it.
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-            }
-            .overlay(alignment: .leading) {
-                if identifier != "closed" {
-                    sectionTitle
+        Group {
+            if let onShowTransactions {
+                HStack(spacing: 0) {
+                    Button(action: onShowTransactions) {
+                        HStack(spacing: 8) {
+                            sectionTitle
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                            Spacer(minLength: 0)
+                        }
                         .padding(.leading, 8)
-                        .allowsHitTesting(false)
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!allowsCollapse)
+                    .accessibilityAddTraits(.isHeader)
+                    .accessibilityLabel(String(format: String(localized: "Show %@ transactions"), title))
+                    .accessibilityIdentifier("account.group.\(identifier).transactions")
+                    .accessibilityHint(String(localized: "Opens transactions for this budget group"))
+
+                    Button {
+                        isExpanded.toggle()
+                    } label: {
+                        HStack(spacing: 8) {
+                            Text(totalText)
+                                .font(.headline.weight(.regular))
+                                .foregroundStyle(balanceColor(for: total))
+                                .animatedAmount(totalText)
+                                // Grouped-list headers uppercase their content,
+                                // which would mangle currency symbols ("kr"→"KR").
+                                .textCase(nil)
+                                // One line always: a narrow sidebar would wrap it.
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.8)
+                            DisclosureChevron(isExpanded: isExpanded)
+                                .frame(width: 12, height: 20)
+                                .accessibilityHidden(true)
+                        }
+                        .padding(.leading, 8)
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!allowsCollapse)
+                    .accessibilityLabel(
+                        String(
+                            format: String(localized: "accounts.group.accessibility"),
+                            title,
+                            expandedState,
+                            totalText
+                        )
+                    )
+                    .accessibilityIdentifier("account.group.\(identifier).disclosure")
+                    .accessibilityHint(collapseHint)
                 }
-            }
-            .overlay(alignment: .trailing) {
-                if identifier != "closed" {
-                    DisclosureChevron(isExpanded: isExpanded)
-                        .frame(width: 12, height: 20)
-                        .allowsHitTesting(false)
+            } else {
+                Button {
+                    isExpanded.toggle()
+                } label: {
+                    HStack(spacing: 8) {
+                        DisclosureChevron(isExpanded: isExpanded)
+                            .frame(width: 12)
+                            .accessibilityHidden(true)
+                        sectionTitle
+                        Spacer(minLength: 8)
+                        Text(totalText)
+                            .font(.headline.weight(.regular))
+                            .foregroundStyle(balanceColor(for: total))
+                            .animatedAmount(totalText)
+                            .padding(.trailing, totalTrailingPadding)
+                            .textCase(nil)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .disabled(!allowsCollapse)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityLabel(
+                    String(
+                        format: String(localized: "accounts.group.accessibility"),
+                        title,
+                        expandedState,
+                        totalText
+                    )
+                )
+                .accessibilityIdentifier("account.group.\(identifier)")
+                .accessibilityHint(collapseHint)
             }
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .disabled(!allowsCollapse)
         .listRowSeparator(.hidden)
-        .accessibilityAddTraits(.isHeader)
-        // State lives in the label, not the hint: hints are read last and can
-        // be disabled outright, and a collapsed section is otherwise
-        // indistinguishable from an empty one. Same convention as the budget
-        // tab's group headers ("Essentials, collapsed").
-        .accessibilityLabel(String(format: String(localized: "accounts.group.accessibility"), title, expandedState, totalText))
-        .accessibilityIdentifier("account.group.\(identifier)")
-        // Hints describe the result of the action, not the gesture itself —
-        // VoiceOver already announces this as double-tap-activatable.
-        .accessibilityHint(allowsCollapse
-            ? (isExpanded
-                ? String(localized: "Collapses this section")
-                : String(localized: "Expands this section"))
-            : "")
+    }
+
+    private var collapseHint: String {
+        guard allowsCollapse else { return "" }
+        return isExpanded
+            ? String(localized: "Collapses this section")
+            : String(localized: "Expands this section")
     }
 
     private var expandedState: String {
@@ -1418,11 +1455,112 @@ private struct AccountGroupTotal: View {
     }
 }
 
+/// Circular badge with an SF Symbol for the account type, or for the loan or
+/// deposit it tracks. Symbols follow `AccountBalanceWidget.iconName`.
+struct AccountTypeAvatar: View {
+    let account: Account
+    var hasLoan: Bool = false
+    var hasDeposit: Bool = false
+
+    // ponytail: icon derived from account.type and active configs only.
+    // Ceiling: no vehicle/personal split for loans. Upgrade path: store
+    // the loan instrument kind on LoanConfig when the loan editor gains the field.
+    nonisolated static func icon(for type: AccountType, hasDeposit: Bool = false, hasLoan: Bool = false) -> String {
+        if hasDeposit {
+            return "lock.fill"
+        }
+        if hasLoan {
+            return "house.fill"
+        }
+        return defaultTypeIcon(for: type)
+    }
+
+    nonisolated static func defaultTypeIcon(for type: AccountType) -> String {
+        switch type {
+        case .checking: "banknote.fill"
+        case .savings: "building.columns.fill"
+        case .credit: "creditcard.fill"
+        case .mortgage: "house.fill"
+        case .debt: "exclamationmark.triangle.fill"
+        case .investment: "chart.line.uptrend.xyaxis"
+        case .other: "dollarsign.circle.fill"
+        }
+    }
+
+    /// Icon color; the badge fills with the same color at low opacity.
+    nonisolated static func iconColor(
+        for type: AccountType,
+        hasDeposit: Bool = false,
+        hasLoan: Bool = false,
+        closed: Bool = false
+    ) -> Color {
+        if closed {
+            return .secondary
+        }
+        if hasDeposit {
+            return .green
+        }
+        if hasLoan {
+            return .blue
+        }
+        switch type {
+        case .checking, .mortgage, .debt: return .blue
+        case .savings: return .purple
+        case .credit: return .orange
+        case .investment: return .green
+        case .other: return .primary
+        }
+    }
+
+    var body: some View {
+        let color = Self.iconColor(for: account.type, hasDeposit: hasDeposit, hasLoan: hasLoan, closed: account.closed)
+        ZStack {
+            Circle().fill(color.opacity(0.18))
+            Image(systemName: Self.icon(for: account.type, hasDeposit: hasDeposit, hasLoan: hasLoan))
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(color)
+        }
+        .frame(width: 36, height: 36)
+    }
+}
+
 struct AccountRow: View {
     @EnvironmentObject var budgetStore: BudgetStore
     let account: Account
     @State private var isCreatingGroup = false
     @State private var newGroupName = ""
+
+    /// Share of payoff or term completed (0...1), or nil when the account has no tracking.
+    /// Pure so tests can exercise all combinations of loan, deposit, and credit card configs.
+    nonisolated static func progress(
+        for account: Account,
+        loanConfig: LoanConfig?,
+        depositConfig: DepositConfig?,
+        creditCardDues: [CreditCardCycle.StatementDue]?,
+        today: DayDate = .today()
+    ) -> Double? {
+        guard !account.closed else { return nil }
+        if let loanConfig {
+            return loanConfig.fractionPaidOff(accountBalance: account.balance)
+        }
+        if let depositConfig {
+            return depositConfig.fractionElapsed(on: today)
+        }
+        // remainingDue never exceeds statementBalance (calculateStatementDue), so this stays in 0...1.
+        guard let dues = creditCardDues,
+              let due = CreditCardCycle.pendingStatementDue(in: dues, today: today),
+              due.statementBalance > 0 else { return nil }
+        return Double(due.statementBalance - due.remainingDue) / Double(due.statementBalance)
+    }
+
+    /// One account is one instrument, so a bar that is neither loan nor
+    /// deposit is a tracked card, whatever the account's type.
+    nonisolated static func progressBarColor(p: Double, hasLoan: Bool, hasDeposit: Bool) -> Color {
+        if p >= 1.0 || hasDeposit {
+            return .green
+        }
+        return hasLoan ? .blue : .red
+    }
 
     var body: some View {
         // The group menu is the only context-menu item, so without it there
@@ -1436,14 +1574,41 @@ struct AccountRow: View {
 
     private var row: some View {
         let balance = budgetStore.displayBalance(account.balance)
-        return HStack {
-            Text(account.name)
-                .font(.body)
-                .padding(.leading, 8)
-            Spacer()
-            Text(balance)
-                .foregroundStyle(balanceColor(for: account.balance))
-                .animatedAmount(balance)
+        let loanConfig = budgetStore.activeLoanConfig(for: account.id)
+        let depositConfig = budgetStore.activeDepositConfig(for: account.id)
+        let hasLoan = loanConfig != nil
+        let hasDeposit = depositConfig != nil
+        let progress = Self.progress(
+            for: account,
+            loanConfig: loanConfig,
+            depositConfig: depositConfig,
+            creditCardDues: budgetStore.creditCardStatementDues[account.id]
+        )
+
+        return HStack(alignment: .center, spacing: 12) {
+            AccountTypeAvatar(
+                account: account,
+                hasLoan: hasLoan,
+                hasDeposit: hasDeposit
+            )
+            .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text(account.name)
+                        .font(.body)
+                    Spacer()
+                    Text(balance)
+                        .foregroundStyle(balanceColor(for: account.balance))
+                        .animatedAmount(balance)
+                }
+                if let p = progress {
+                    ProgressView(value: p)
+                        .progressViewStyle(.linear)
+                        .tint(Self.progressBarColor(p: p, hasLoan: hasLoan, hasDeposit: hasDeposit))
+                        .accessibilityIdentifier("accountRow.progress.\(account.id)")
+                }
+            }
         }
         .alert(String(localized: "Create Group"), isPresented: $isCreatingGroup) {
             TextField(String(localized: "Group Name"), text: $newGroupName)
