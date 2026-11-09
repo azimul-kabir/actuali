@@ -631,6 +631,28 @@ final class BudgetDatabase: Sendable {
 
     // MARK: - Accounts
 
+    /// Refuse to emit a CRDT update for an account that has been deleted
+    /// locally, or whose new name another account already uses. The name check
+    /// mirrors the web app's `validateAccountName` (exact match, closed
+    /// accounts included).
+    func validateAccountRename(id: String, name: String) throws {
+        try dbQueue.read { db in
+            let exists = try Bool.fetchOne(db, sql: """
+            SELECT 1 FROM accounts
+            WHERE id = ? AND tombstone IS NOT 1
+            """, arguments: [id]) ?? false
+            guard exists else { throw AccountWriteError.accountNotFound }
+
+            let taken = try Bool.fetchOne(db, sql: """
+            SELECT 1 FROM accounts
+            WHERE name = ? AND id != ? AND tombstone IS NOT 1
+            """, arguments: [name, id]) ?? false
+            if taken {
+                throw AccountWriteError.duplicateAccountName(name)
+            }
+        }
+    }
+
     func fetchAccounts() async throws -> [Account] {
         try await dbQueue.read { db in
             let records = try AccountRecord
@@ -724,6 +746,75 @@ final class BudgetDatabase: Sendable {
     func setAccountGroup(accountId: String, groupId: String?) throws {
         try dbQueue.write { db in
             try db.execute(sql: "UPDATE accounts SET account_group_id = ? WHERE id = ?", arguments: [groupId, accountId])
+        }
+    }
+
+    func setAccountClosed(accountId: String, closed: Bool) throws {
+        try dbQueue.write { db in
+            try db.execute(sql: "UPDATE accounts SET closed = ? WHERE id = ?", arguments: [closed ? 1 : 0, accountId])
+        }
+    }
+
+    func tombstoneAccount(accountId: String) throws {
+        try dbQueue.write { db in
+            try db.execute(sql: "UPDATE accounts SET tombstone = 1 WHERE id = ?", arguments: [accountId])
+        }
+    }
+
+    /// Whether the account has any non-deleted transaction. Unlike
+    /// `hasAnyTransactionRow`, deleted rows don't count: upstream's close
+    /// only deletes an account outright when `v_transactions` is empty for it.
+    /// A NULL tombstone counts as alive, as in every other query here.
+    func hasLiveTransactions(accountId: String) async throws -> Bool {
+        try await dbQueue.read { db in
+            try Bool.fetchOne(db, sql: """
+            SELECT EXISTS (
+                SELECT 1 FROM transactions
+                WHERE acct = ? AND (tombstone = 0 OR tombstone IS NULL)
+            )
+            """, arguments: [accountId]) ?? false
+        }
+    }
+
+    struct ForceCloseTargets: Sendable {
+        /// Every live row in the account (split children included).
+        let transactionIds: [String]
+        /// Transfer partners to unlink; rows in the account itself are
+        /// tombstoned anyway, so they are left out.
+        let partnerIds: [String]
+    }
+
+    /// Same live predicate as the account balance, so every row the write
+    /// below tombstones gets a CRDT message.
+    func forceCloseTargets(accountId: String) throws -> ForceCloseTargets {
+        try dbQueue.read { db in
+            let ids = try String.fetchAll(db, sql: """
+            SELECT id FROM transactions WHERE acct = ? AND (tombstone = 0 OR tombstone IS NULL)
+            """, arguments: [accountId])
+            let partners = try String.fetchAll(db, sql: """
+            SELECT p.id FROM transactions t JOIN transactions p ON p.id = t.transferred_id
+            WHERE t.acct = ? AND (t.tombstone = 0 OR t.tombstone IS NULL) AND p.acct != ?
+            """, arguments: [accountId, accountId])
+            return ForceCloseTargets(transactionIds: ids, partnerIds: partners)
+        }
+    }
+
+    /// Delete the account, its transactions and its transfer payee, and unlink
+    /// the partner legs, with all CRDT messages, in one SQLite transaction.
+    func forceCloseAccount(
+        accountId: String,
+        targets: ForceCloseTargets,
+        transferPayeeId: String,
+        messages: [CRDTMessage]
+    ) throws -> [CRDTMessage] {
+        try dbQueue.write { db in
+            try db.execute(sql: "UPDATE transactions SET tombstone = 1 WHERE acct = ?", arguments: [accountId])
+            for partnerId in targets.partnerIds {
+                try db.execute(sql: "UPDATE transactions SET description = NULL, transferred_id = NULL WHERE id = ?", arguments: [partnerId])
+            }
+            try db.execute(sql: "UPDATE accounts SET tombstone = 1 WHERE id = ?", arguments: [accountId])
+            try db.execute(sql: "UPDATE payees SET tombstone = 1 WHERE id = ?", arguments: [transferPayeeId])
+            return try Self.insertMessageRows(db, messages)
         }
     }
 
@@ -1728,6 +1819,20 @@ final class BudgetDatabase: Sendable {
     struct CategoryInsertion: Equatable {
         let category: Category
         let movedSiblings: [SortOrder.Position]
+    }
+
+    enum AccountWriteError: LocalizedError, Equatable {
+        case accountNotFound
+        case duplicateAccountName(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .accountNotFound:
+                String(localized: "That account no longer exists")
+            case .duplicateAccountName(let name):
+                String(localized: "An account named \"\(name)\" already exists")
+            }
+        }
     }
 
     /// Refusals that come from the budget's own contents rather than SQLite,

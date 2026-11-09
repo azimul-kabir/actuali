@@ -319,8 +319,11 @@ struct AccountsListView: View {
                     .moveDisabled(!isReordering)
             } else {
                 accountCell(account, linked: linked)
-                    .listRowBackground(groupRowBackground(
-                        position: precedingGroupRowPosition(for: account, in: bucket, among: buckets)
+                    .listRowBackground(AccountGroupRowBackground(
+                        position: AccountGroupRowLayout.position(
+                            roundsTop: offset == 0,
+                            roundsBottom: offset == bucket.accounts.count - 1
+                        )
                     ))
                     .moveDisabled(!isReordering)
             }
@@ -403,13 +406,11 @@ struct AccountsListView: View {
         )
     }
 
-    private func precedingGroupRowPosition(for account: Account, in bucket: AccountListBucket, among buckets: [AccountListBucket]) -> AccountGroupRowPosition? {
-        guard bucket.id == "ungrouped",
-              bucket.accounts.last?.id == account.id,
-              let group = buckets.first(where: { $0.group != nil })?.group,
-              accountGroupBackgroundIsClear(group.id)
-        else { return nil }
-        return .last
+    private func closedRowBackground(at index: Int) -> AccountGroupRowBackground {
+        AccountGroupRowBackground(position: AccountGroupRowLayout.position(
+            roundsTop: index == 0,
+            roundsBottom: index == filteredClosedAccounts.count - 1
+        ))
     }
 
     private var filteredOnBudgetAccounts: [Account] {
@@ -481,13 +482,6 @@ struct AccountsListView: View {
                     emptyState
                 } else {
                     List {
-                        if !isSearchingAccounts {
-                            Section {
-                                NavigationLink(value: AccountsRoute.allAccounts) {
-                                    allAccountsRow
-                                }
-                            }
-                        }
                         if !filteredOnBudgetAccounts.isEmpty {
                             Section {
                                 if isOnBudgetExpanded || isSearchingAccounts || isReordering {
@@ -533,10 +527,11 @@ struct AccountsListView: View {
                         if !filteredClosedAccounts.isEmpty {
                             Section {
                                 if isClosedExpanded || isSearchingAccounts {
-                                    ForEach(filteredClosedAccounts) { account in
+                                    ForEach(Array(filteredClosedAccounts.enumerated()), id: \.element.id) { offset, account in
                                         NavigationLink(value: AccountsRoute.account(account)) {
                                             AccountRow(account: account)
                                         }
+                                        .listRowBackground(closedRowBackground(at: offset))
                                     }
                                 }
                             } header: {
@@ -559,6 +554,12 @@ struct AccountsListView: View {
                         accessibilityPrefix: "accounts"
                     )
                     .environment(\.editMode, .constant(isReordering ? .active : .inactive))
+                    .pinnedSectionHeaders()
+                    .safeAreaInset(edge: .top, spacing: 0) {
+                        pinnedSummary {
+                            NavigationLink(value: AccountsRoute.allAccounts) { allAccountsCard }
+                        }
+                    }
                     // Capped like the transactions this pushes to, so a
                     // narrow-iPad account list doesn't stretch a row's balance
                     // an inch away from its name. Only here: the split
@@ -585,12 +586,6 @@ struct AccountsListView: View {
                     emptyState
                 } else {
                     List(selection: $selection) {
-                        if !isSearchingAccounts {
-                            Section {
-                                allAccountsRow
-                                    .tag(AccountSelection.allAccounts)
-                            }
-                        }
                         if !filteredOnBudgetAccounts.isEmpty {
                             Section {
                                 if isOnBudgetExpanded || isSearchingAccounts || isReordering {
@@ -636,9 +631,10 @@ struct AccountsListView: View {
                         if !filteredClosedAccounts.isEmpty {
                             Section {
                                 if isClosedExpanded || isSearchingAccounts {
-                                    ForEach(filteredClosedAccounts) { account in
+                                    ForEach(Array(filteredClosedAccounts.enumerated()), id: \.element.id) { offset, account in
                                         AccountRow(account: account)
                                             .tag(AccountSelection.account(account.id))
+                                            .listRowBackground(closedRowBackground(at: offset))
                                     }
                                 }
                             } header: {
@@ -661,6 +657,12 @@ struct AccountsListView: View {
                         accessibilityPrefix: "accounts"
                     )
                     .environment(\.editMode, .constant(isReordering ? .active : .inactive))
+                    .pinnedSectionHeaders()
+                    .safeAreaInset(edge: .top, spacing: 0) {
+                        pinnedSummary {
+                            Button { selection = .allAccounts } label: { allAccountsCard }
+                        }
+                    }
                 }
             }
         } detail: {
@@ -715,10 +717,33 @@ struct AccountsListView: View {
         budgetStore.accounts.isEmpty && !budgetStore.isLoading
     }
 
-    private var allAccountsRow: some View {
+    /// The card as Budget draws its summary, so the two tabs' summaries line up.
+    private var allAccountsCard: some View {
         AccountsSummaryCard(totalBalance: totalBalance, monthTotals: monthSummary)
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("accounts.topBox")
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 24)
+                    .fill(Color(.secondarySystemGroupedBackground))
+            )
+    }
+
+    /// Kept outside the List so it stays put while the accounts scroll, like
+    /// the Budget summary (GH #155). Hidden while searching, as the in-list
+    /// row was.
+    @ViewBuilder
+    private func pinnedSummary(@ViewBuilder _ link: () -> some View) -> some View {
+        if !isSearchingAccounts {
+            link()
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("accounts.topBox")
+                .padding(.horizontal, TopBoxLayout.horizontalContentMargin)
+                .padding(.top, TopBoxLayout.verticalContentMargin)
+                // Twice the top gutter: the room the later section bars get
+                // from the gap between sections, so On Budget isn't squat.
+                .padding(.bottom, TopBoxLayout.verticalContentMargin * 2)
+                .background(Color(.systemGroupedBackground).ignoresSafeArea())
+        }
     }
 
     @ViewBuilder
@@ -1321,6 +1346,11 @@ struct AccountSectionHeader: View {
             }
         }
         .listRowSeparator(.hidden)
+        // Pinned, so rows scrolling beneath must not show through: take the
+        // container's insets away and put the horizontal one back inside.
+        .padding(.horizontal, 16)
+        .listRowInsets(EdgeInsets())
+        .background(Color(.systemGroupedBackground))
     }
 
     private var collapseHint: String {
@@ -1371,6 +1401,7 @@ private struct AccountGroupListHeader: View {
                 AccountGroupTotal(totalText: totalText, total: total)
                     .padding(.trailing, totalTrailingPadding)
             }
+            .frame(minHeight: 44)
             .contentShape(Rectangle())
             .overlay(alignment: .leading) {
                 DisclosureChevron(isExpanded: isExpanded)
@@ -1379,7 +1410,7 @@ private struct AccountGroupListHeader: View {
             }
         }
         .buttonStyle(.plain)
-        .listRowInsets(EdgeInsets(top: 5, leading: 28, bottom: 5, trailing: 16))
+        .listRowInsets(EdgeInsets(top: 0, leading: 28, bottom: 0, trailing: 16))
         .listRowBackground(rowBackground)
         .listRowSeparator(isBackgroundClear ? .hidden : .visible, edges: .top)
         .listRowSeparator(.hidden, edges: .bottom)
@@ -1436,10 +1467,6 @@ private struct AccountGroupRowBackground: View {
     }
 }
 
-private func groupRowBackground(position: AccountGroupRowPosition?) -> AnyView? {
-    position.map { AnyView(AccountGroupRowBackground(position: $0)) }
-}
-
 private struct AccountGroupTotal: View {
     let totalText: String
     let total: Int
@@ -1455,22 +1482,31 @@ private struct AccountGroupTotal: View {
     }
 }
 
-/// Circular badge with an SF Symbol for the account type, or for the loan or
-/// deposit it tracks. Symbols follow `AccountBalanceWidget.iconName`.
+/// Circular badge with an SF Symbol for the account type, or for the loan,
+/// deposit or credit card it tracks. Symbols follow `AccountBalanceWidget.iconName`.
 struct AccountTypeAvatar: View {
     let account: Account
     var hasLoan: Bool = false
     var hasDeposit: Bool = false
+    var hasCreditCard: Bool = false
 
     // ponytail: icon derived from account.type and active configs only.
     // Ceiling: no vehicle/personal split for loans. Upgrade path: store
     // the loan instrument kind on LoanConfig when the loan editor gains the field.
-    nonisolated static func icon(for type: AccountType, hasDeposit: Bool = false, hasLoan: Bool = false) -> String {
+    nonisolated static func icon(
+        for type: AccountType,
+        hasDeposit: Bool = false,
+        hasLoan: Bool = false,
+        hasCreditCard: Bool = false
+    ) -> String {
         if hasDeposit {
             return "lock.fill"
         }
         if hasLoan {
             return "house.fill"
+        }
+        if hasCreditCard {
+            return "creditcard.fill"
         }
         return defaultTypeIcon(for: type)
     }
@@ -1492,6 +1528,7 @@ struct AccountTypeAvatar: View {
         for type: AccountType,
         hasDeposit: Bool = false,
         hasLoan: Bool = false,
+        hasCreditCard: Bool = false,
         closed: Bool = false
     ) -> Color {
         if closed {
@@ -1503,6 +1540,9 @@ struct AccountTypeAvatar: View {
         if hasLoan {
             return .blue
         }
+        if hasCreditCard {
+            return .orange
+        }
         switch type {
         case .checking, .mortgage, .debt: return .blue
         case .savings: return .purple
@@ -1513,12 +1553,23 @@ struct AccountTypeAvatar: View {
     }
 
     var body: some View {
-        let color = Self.iconColor(for: account.type, hasDeposit: hasDeposit, hasLoan: hasLoan, closed: account.closed)
+        let color = Self.iconColor(
+            for: account.type,
+            hasDeposit: hasDeposit,
+            hasLoan: hasLoan,
+            hasCreditCard: hasCreditCard,
+            closed: account.closed
+        )
         ZStack {
             Circle().fill(color.opacity(0.18))
-            Image(systemName: Self.icon(for: account.type, hasDeposit: hasDeposit, hasLoan: hasLoan))
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(color)
+            Image(systemName: Self.icon(
+                for: account.type,
+                hasDeposit: hasDeposit,
+                hasLoan: hasLoan,
+                hasCreditCard: hasCreditCard
+            ))
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(color)
         }
         .frame(width: 36, height: 36)
     }
@@ -1527,8 +1578,13 @@ struct AccountTypeAvatar: View {
 struct AccountRow: View {
     @EnvironmentObject var budgetStore: BudgetStore
     let account: Account
+    @AppStorage("showAccountTypeIcons") private var showAccountTypeIcons = true
+
     @State private var isCreatingGroup = false
+    @State private var isRenamingAccount = false
     @State private var newGroupName = ""
+    @State private var renameName = ""
+    @State private var isClosing = false
 
     /// Share of payoff or term completed (0...1), or nil when the account has no tracking.
     /// Pure so tests can exercise all combinations of loan, deposit, and credit card configs.
@@ -1563,12 +1619,78 @@ struct AccountRow: View {
     }
 
     var body: some View {
-        // The group menu is the only context-menu item, so without it there
-        // is no menu at all rather than an empty one.
-        if budgetStore.accountGroupWritesEnabled {
-            row.contextMenu { groupMenu }
+        row
+            .contextMenu {
+                Button {
+                    renameName = account.name
+                    isRenamingAccount = true
+                } label: {
+                    Label(String(localized: "Rename Account"), systemImage: "pencil")
+                }
+                .accessibilityIdentifier("accountRename.action")
+
+                if budgetStore.accountGroupWritesEnabled {
+                    groupMenu
+                }
+                typeMenu
+                closeMenu
+            }
+            .sheet(isPresented: $isClosing) {
+                CloseAccountSheet(account: account)
+            }
+    }
+
+    private func commitRename() {
+        let name = renameName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, name != account.name else { return }
+        Task {
+            do {
+                try await budgetStore.renameAccount(id: account.id, name: name)
+            } catch {
+                budgetStore.error = error.localizedDescription
+            }
+        }
+    }
+
+    private var typeMenu: some View {
+        Menu(String(localized: "accounts.type.title"), systemImage: "tag") {
+            ForEach(AccountType.allCases, id: \.self) { type in
+                Button {
+                    Task {
+                        do {
+                            try await budgetStore.setAccountType(account, type: type)
+                        } catch {
+                            budgetStore.error = error.localizedDescription
+                        }
+                    }
+                } label: {
+                    if account.type == type {
+                        Label(type.title, systemImage: "checkmark")
+                    } else {
+                        Text(type.title)
+                    }
+                }
+            }
+        }
+        .accessibilityIdentifier("accountRow.type.\(account.id)")
+    }
+
+    @ViewBuilder
+    private var closeMenu: some View {
+        if account.closed {
+            Button {
+                Task { try? await budgetStore.reopenAccount(account) }
+            } label: {
+                Label(String(localized: "Reopen Account"), systemImage: "arrow.uturn.backward")
+            }
+            .accessibilityIdentifier("accountRow.reopen.\(account.id)")
         } else {
-            row
+            Button(role: .destructive) {
+                isClosing = true
+            } label: {
+                Label(String(localized: "Close Account"), systemImage: "xmark.circle")
+            }
+            .accessibilityIdentifier("accountRow.close.\(account.id)")
         }
     }
 
@@ -1578,6 +1700,7 @@ struct AccountRow: View {
         let depositConfig = budgetStore.activeDepositConfig(for: account.id)
         let hasLoan = loanConfig != nil
         let hasDeposit = depositConfig != nil
+        let hasCreditCard = budgetStore.activeCreditCardCycle(for: account.id) != nil
         let progress = Self.progress(
             for: account,
             loanConfig: loanConfig,
@@ -1586,12 +1709,15 @@ struct AccountRow: View {
         )
 
         return HStack(alignment: .center, spacing: 12) {
-            AccountTypeAvatar(
-                account: account,
-                hasLoan: hasLoan,
-                hasDeposit: hasDeposit
-            )
-            .accessibilityHidden(true)
+            if showAccountTypeIcons {
+                AccountTypeAvatar(
+                    account: account,
+                    hasLoan: hasLoan,
+                    hasDeposit: hasDeposit,
+                    hasCreditCard: hasCreditCard
+                )
+                .accessibilityHidden(true)
+            }
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
@@ -1618,6 +1744,14 @@ struct AccountRow: View {
             }
             .disabled(newGroupName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             Button(String(localized: "Cancel"), role: .cancel) {}
+        }
+        .alert(String(localized: "Rename Account"), isPresented: $isRenamingAccount) {
+            TextField(String(localized: "Account Name"), text: $renameName)
+            Button(String(localized: "Cancel"), role: .cancel) {}
+            Button(String(localized: "Save")) {
+                commitRename()
+            }
+            .disabled(renameName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
     }
 
@@ -1732,4 +1866,135 @@ private struct AccountGroupsSheet: View {
 #Preview {
     AccountsListView()
         .environmentObject(BudgetStore.previewInstance())
+}
+
+/// Close flow for one account (upstream `closeAccount`): a non-zero balance
+/// needs a destination account, plus a category when the money leaves the
+/// budget for an off-budget account.
+private struct CloseAccountSheet: View {
+    @EnvironmentObject var budgetStore: BudgetStore
+    @Environment(\.dismiss) private var dismiss
+    let account: Account
+    @State private var transferAccountId: String?
+    @State private var categoryId: String?
+    @State private var errorMessage: String?
+    @State private var isConfirmingForceClose = false
+
+    private var destinations: [Account] {
+        budgetStore.accounts.filter { !$0.closed && $0.id != account.id }
+    }
+
+    /// Upstream asks only when an on-budget account empties into an
+    /// off-budget one, and won't close until a category is picked.
+    private var needsCategory: Bool {
+        BudgetStore.transferLegTakesCategory(
+            leg: account.id,
+            partner: transferAccountId,
+            offBudgetAccountIds: budgetStore.offBudgetAccountIds
+        )
+    }
+
+    private var canClose: Bool {
+        account.balance == 0 || (transferAccountId != nil && (!needsCategory || categoryId != nil))
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                if account.balance != 0 {
+                    Section {
+                        Picker(String(localized: "Move Balance To"), selection: $transferAccountId) {
+                            Text(String(localized: "Select Account")).tag(String?.none)
+                            ForEach(destinations) { Text($0.name).tag(String?.some($0.id)) }
+                        }
+                        .accessibilityIdentifier("closeAccount.destination")
+                        if needsCategory {
+                            Picker(String(localized: "Category"), selection: $categoryId) {
+                                Text(String(localized: "Select a category")).tag(String?.none)
+                                ForEach(budgetStore.categoryGroups.filter { !$0.isIncome }) { group in
+                                    ForEach(group.categories) { Text($0.name).tag(String?.some($0.id)) }
+                                }
+                            }
+                            .accessibilityIdentifier("closeAccount.category")
+                        }
+                    } footer: {
+                        Text(String(
+                            localized: "The remaining balance of \(budgetStore.displayBalance(account.balance)) moves to the selected account."
+                        ))
+                    }
+                } else {
+                    Section {
+                        Text(String(localized: "Closed accounts stay in your history but no longer accept new transactions."))
+                    }
+                }
+                Section {
+                    Button(String(localized: "Delete Account and Transactions"), role: .destructive) {
+                        isConfirmingForceClose = true
+                    }
+                    .accessibilityIdentifier("closeAccount.forceClose")
+                } footer: {
+                    Text(String(localized: "Removes the account and every transaction in it. Transfers in other accounts stay but lose their link. This can't be undone."))
+                }
+                if let errorMessage {
+                    Section { Text(errorMessage).foregroundStyle(.red) }
+                }
+            }
+            .confirmationDialog(
+                String(localized: "Delete this account and all its transactions?"),
+                isPresented: $isConfirmingForceClose,
+                titleVisibility: .visible
+            ) {
+                Button(String(localized: "Delete Account and Transactions"), role: .destructive) {
+                    Task {
+                        do {
+                            try await budgetStore.forceCloseAccount(account)
+                            dismiss()
+                        } catch {
+                            errorMessage = error.localizedDescription
+                        }
+                    }
+                }
+            }
+            .navigationTitle(String(localized: "Close Account"))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button(String(localized: "Cancel")) { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button(String(localized: "Close")) {
+                        Task {
+                            do {
+                                try await budgetStore.closeAccount(
+                                    account,
+                                    transferAccountId: transferAccountId,
+                                    categoryId: needsCategory ? categoryId : nil
+                                )
+                                dismiss()
+                            } catch {
+                                errorMessage = error.localizedDescription
+                            }
+                        }
+                    }
+                    .disabled(!canClose)
+                    .accessibilityIdentifier("closeAccount.confirm")
+                }
+            }
+        }
+    }
+}
+
+private extension View {
+    /// Grouped List headers scroll away; the plain style pins them (as
+    /// Budget's group headers are, GH #610). The grouped look is put back
+    /// by hand: no default background, the grouped canvas colour behind.
+    func pinnedSectionHeaders() -> some View {
+        listStyle(.plain)
+            // The plain style's stock minimum is taller than the 44 pt header
+            // rows, which would leave group rows taller than the section bars.
+            .environment(\.defaultMinListRowHeight, 44)
+            .contentMargins(.top, 0, for: .scrollContent)
+            .scrollContentBackground(.hidden)
+            .background(Color(.systemGroupedBackground))
+    }
 }

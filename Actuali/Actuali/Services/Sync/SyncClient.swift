@@ -1159,6 +1159,76 @@ actor SyncClient {
         scheduleAutomaticSync()
     }
 
+    func setAccountType(accountId: String, type: AccountType) async throws {
+        guard let database else { throw SyncError.notConfigured }
+        let messages = try await messageGenerator.messages(dataset: "accounts", row: accountId, fields: [("type", type.rawValue)])
+        for msg in try database.applyMessagesAndInsertMessages(messages) {
+            merkle = merkle.inserting(msg.timestamp)
+        }
+        merkle = merkle.pruned()
+        try saveClock()
+        scheduleAutomaticSync()
+    }
+
+    func setAccountClosed(accountId: String, closed: Bool) async throws {
+        guard let database else { throw SyncError.notConfigured }
+        try database.setAccountClosed(accountId: accountId, closed: closed)
+        let messages = try await messageGenerator.messages(dataset: "accounts", row: accountId, fields: [("closed", closed ? 1 : 0)])
+        for msg in try database.insertMessages(messages) {
+            merkle = merkle.inserting(msg.timestamp)
+        }
+        merkle = merkle.pruned()
+        try saveClock()
+        scheduleAutomaticSync()
+    }
+
+    /// Soft-delete the account row only, like upstream `db.deleteAccount`.
+    func deleteAccount(id: String) async throws {
+        guard let database else { throw SyncError.notConfigured }
+        try database.tombstoneAccount(accountId: id)
+        let messages = try await messageGenerator.messages(dataset: "accounts", row: id, fields: [("tombstone", 1)])
+        for msg in try database.insertMessages(messages) {
+            merkle = merkle.inserting(msg.timestamp)
+        }
+        merkle = merkle.pruned()
+        try saveClock()
+        scheduleAutomaticSync()
+    }
+
+    /// Upstream `closeAccount(forced: true)`: one batch that unlinks each
+    /// transfer partner, tombstones the account's transactions, the account
+    /// and its transfer payee.
+    func forceCloseAccount(id: String) async throws {
+        guard let database else { throw SyncError.notConfigured }
+        // Upstream throws rather than leave a transfer payee behind.
+        guard let payeeId = try database.transferPayeeId(forAccountId: id) else {
+            throw BudgetStoreError.transferPayeeMissing
+        }
+        let targets = try database.forceCloseTargets(accountId: id)
+
+        var messages: [CRDTMessage] = []
+        for partnerId in targets.partnerIds {
+            messages += try await messageGenerator.messages(
+                dataset: "transactions", row: partnerId,
+                fields: [("description", nil), ("transferred_id", nil)]
+            )
+        }
+        for transactionId in targets.transactionIds {
+            messages += try await messageGenerator.messages(dataset: "transactions", row: transactionId, fields: [("tombstone", 1)])
+        }
+        messages += try await messageGenerator.messages(dataset: "accounts", row: id, fields: [("tombstone", 1)])
+        messages += try await messageGenerator.messages(dataset: "payees", row: payeeId, fields: [("tombstone", 1)])
+
+        for msg in try database.forceCloseAccount(
+            accountId: id, targets: targets, transferPayeeId: payeeId, messages: messages
+        ) {
+            merkle = merkle.inserting(msg.timestamp)
+        }
+        merkle = merkle.pruned()
+        try saveClock()
+        scheduleAutomaticSync()
+    }
+
     func moveAccount(accountId: String, toGroupId: String?, beforeAccountId: String?) async throws {
         guard let database else { throw SyncError.notConfigured }
         let result = try database.moveAccount(
@@ -1303,6 +1373,14 @@ actor SyncClient {
         try saveClock()
 
         scheduleAutomaticSync()
+    }
+
+    /// Matches upstream's `api/account-update` / `db.updateAccount`: only the
+    /// account's `name` field is sent through Actual's CRDT mutation path.
+    func renameAccount(id: String, name: String) async throws {
+        guard let database else { throw SyncError.notConfigured }
+        try database.validateAccountRename(id: id, name: name)
+        try await rename(database: database, dataset: Account.datasetName, id: id, name: name)
     }
 
     /// Rename a category through the normal CRDT path so the local optimistic
