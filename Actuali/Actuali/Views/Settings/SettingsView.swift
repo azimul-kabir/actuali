@@ -37,6 +37,7 @@ struct SettingsView: View {
     static var preferencesItems: [SettingsItem] {
         [
             SettingsItem(title: String(localized: "Display"), systemImage: "iphone", destination: { AnyView(DisplaySettingsView()) }),
+            SettingsItem(title: String(localized: "Notifications"), systemImage: "bell", destination: { AnyView(NotificationsSettingsView()) }),
             SettingsItem(title: String(localized: "Privacy"), systemImage: "hand.raised", destination: { AnyView(PrivacySettingsView()) }),
             SettingsItem(title: String(localized: "Transactions & Automation"), systemImage: "arrow.left.arrow.right", destination: { AnyView(TransactionAutomationSettingsView()) }),
         ].sorted { Self.titlePrecedes($0.title, $1.title) }
@@ -163,7 +164,6 @@ struct SettingsView: View {
             }
             .readableWidth()
             .toolbar(.hidden, for: .navigationBar)
-            .contentMargins(.horizontal, 6, for: .scrollContent)
         }
         // Keep the store-wide loading indicator above the navigation stack so
         // operations started from any destination remain covered, not only
