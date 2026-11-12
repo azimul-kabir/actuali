@@ -13,6 +13,12 @@ enum TransactionBulkEdit {
         transactions.reduce(0) { $0 + $1.amount }
     }
 
+    /// Whether the selection's schedule action should unlink rather than link,
+    /// as upstream's selection menu decides it.
+    nonisolated static func allLinkedToSchedule(_ transactions: [Transaction]) -> Bool {
+        !transactions.isEmpty && transactions.allSatisfy { $0.schedule != nil }
+    }
+
     /// Whether two transactions can be merged, following Actual's rules
     /// (loot-core `validForMerge`): same account and amount. Transfers are
     /// left out for now.
@@ -4566,7 +4572,7 @@ final class BudgetStore: ObservableObject {
     /// which half of itself to show. Failures leave the flag alone: an
     /// unreachable server isn't evidence either way.
     func refreshBankSyncSource() async {
-        if let configured = try? await serverClient.simpleFINStatus() {
+        if let configured = try? await serverClient.simpleFINStatus(fileId: currentCloudFileId()) {
             serverProvidesBankSync = configured == true
         }
     }
@@ -4584,9 +4590,10 @@ final class BudgetStore: ObservableObject {
         do {
             // nil means the route isn't served here — an older server, or a
             // proxy that strips it. Not a failure, just not an option.
-            if try await serverClient.simpleFINStatus() == true {
+            let fileId = currentCloudFileId()
+            if try await serverClient.simpleFINStatus(fileId: fileId) == true {
                 serverProvidesBankSync = true
-                return ActualServerBankSyncProvider(client: serverClient)
+                return ActualServerBankSyncProvider(client: serverClient, fileId: fileId)
             }
             serverProvidesBankSync = false
         } catch {
@@ -6512,8 +6519,9 @@ final class BudgetStore: ObservableObject {
     }
 
     /// Resolve an expense/income form to `.standard`, or `.split` when split
-    /// lines are present: every line must parse to a positive amount and the
-    /// lines must add up exactly to the total. An `isOpposite` line runs
+    /// lines are present: every line must parse to a non-negative amount (a 0
+    /// line is valid, as in Actual — GH #815) and the lines must add up
+    /// exactly to the total. An `isOpposite` line runs
     /// against the transaction's direction — a refund inside a spend
     /// (GH #216).
     private nonisolated static func planStandardOrSplit(
@@ -6530,7 +6538,7 @@ final class BudgetStore: ObservableObject {
         let lines = try form.splits.map { line in
             guard let dollars = Double(line.amount),
                   let cents = Transaction.cents(fromDollars: dollars),
-                  cents > 0 else {
+                  cents >= 0 else {
                 throw BudgetStoreError.invalidAmount
             }
             let payeeName = line.payeeName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -7908,16 +7916,18 @@ final class BudgetStore: ObservableObject {
 
     /// Link transactions to a schedule, or unlink them by passing nil.
     /// `transactions.schedule` is already a syncable field, so this needs no
-    /// new write path.
+    /// new write path. Reconciled rows stay locked, as in the other bulk edits.
     func linkTransactions(_ transactions: [Transaction], to scheduleId: String?) async throws {
         guard let database, let syncClient else { throw BudgetStoreError.syncNotConfigured }
-        guard !transactions.isEmpty else { return }
+        let editable = transactions.filter { !$0.reconciled }
+        reportSkipped(locked: transactions.count - editable.count, unsupported: 0)
+        guard !editable.isEmpty else { return }
 
         try database.setTransactionSchedule(
-            transactionIds: transactions.map(\.id), scheduleId: scheduleId
+            transactionIds: editable.map(\.id), scheduleId: scheduleId
         )
 
-        let updated = transactions.map { transaction -> Transaction in
+        let updated = editable.map { transaction -> Transaction in
             var copy = transaction
             copy.schedule = scheduleId
             return copy
