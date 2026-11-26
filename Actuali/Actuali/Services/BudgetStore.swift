@@ -124,6 +124,7 @@ enum BudgetStoreError: LocalizedError, Equatable {
     case ruleOwnedBySchedule
     case ruleNotSerializable
     case bankSyncNotConfigured
+    case bankSyncAccountNotLinked
     case invalidTagName
     case tagAlreadyExists
     case tagCreationFailed(String)
@@ -231,6 +232,8 @@ enum BudgetStoreError: LocalizedError, Equatable {
             ReportStrings.text("error.ruleNotSerializable", locale: locale, bundle: bundle)
         case .bankSyncNotConfigured:
             ReportStrings.text("error.bankSyncNotConfigured", locale: locale, bundle: bundle)
+        case .bankSyncAccountNotLinked:
+            ReportStrings.text("error.bankSyncAccountNotLinked", locale: locale, bundle: bundle)
         case .loanAccountOnBudget:
             ReportStrings.text("error.loanAccountOnBudget", locale: locale, bundle: bundle)
         case .invalidTagName:
@@ -331,6 +334,27 @@ final class BudgetStore: ObservableObject {
         availableLoginMethods.contains { $0.method == "password" && $0.isActive }
     }
 
+    /// Whether the Connect button has anything to do. Once the server is known
+    /// to use password login, an empty password can only fail, so the button
+    /// stays off instead of appearing to do nothing. Before the probe answers
+    /// it stays available: tapping it is what discovers an OpenID-only server.
+    func canConnect(password: String) -> Bool {
+        !serverURL.isEmpty && !isLoading && !(passwordLoginActive && password.isEmpty)
+    }
+
+    /// Set by a fresh sign-in and consumed by the budget section, so the
+    /// "select a budget" prompt appears once per connection rather than on
+    /// every visit to the screen.
+    var budgetSelectionPromptPending = false
+
+    /// Whether to show the post-connect budget prompt now. Clears the pending
+    /// flag either way: a connection that had nothing to offer shouldn't
+    /// prompt later out of the blue.
+    func consumeBudgetSelectionPrompt() -> Bool {
+        defer { budgetSelectionPromptPending = false }
+        return budgetSelectionPromptPending && currentBudgetId == nil && !remoteBudgets.isEmpty
+    }
+
     /// Whether the configured server offers OpenID/OAuth login.
     var supportsOpenIDLogin: Bool {
         availableLoginMethods.contains { $0.method == "openid" }
@@ -359,6 +383,12 @@ final class BudgetStore: ObservableObject {
                 depositConfigs = [:]
                 cardAccountMappings = [:]
                 excludedFromSpentCategoryIds = Self.loadExcludedFromSpentCategoryIds(for: currentBudgetId)
+                // Read before either write: both didSets save under the new id.
+                let matched = Self.loadMatchedTransactionIds(for: currentBudgetId)
+                unreviewedTransactions = Self.loadUnreviewedTransactions(for: currentBudgetId)
+                matchedTransactionIds = matched.intersection(unreviewedTransactions.keys)
+                stagedBankTransactions = Self.loadStagedBankTransactions(for: currentBudgetId)
+                rejectedBankImportIds = Self.loadRejectedBankImportIds(for: currentBudgetId)
             }
         }
     }
@@ -403,6 +433,71 @@ final class BudgetStore: ObservableObject {
         }
     }
 
+    /// Transactions this device's bank sync imported that haven't been
+    /// looked at yet, as transaction id → account id. What another device
+    /// synced in is left out: its owner already saw it there. Local to
+    /// the device and budget, like the notification watermark: what this
+    /// phone has shown its owner is not budget data.
+    // ponytail: ids are only checked against the database when the New
+    // Transactions list loads, so a transaction deleted before then stays
+    // counted until that list is opened. Prune on refresh if that ever shows.
+    // ponytail: marks are kept until cleared on purpose, so nothing bounds
+    // them for someone who never reviews. Each change rewrites the whole
+    // dictionary to UserDefaults and each account row scans it for its
+    // count: fine for hundreds, not for tens of thousands. If it shows,
+    // age out the oldest marks past a cap.
+    @Published private(set) var unreviewedTransactions: [String: String] = [:] {
+        didSet {
+            guard let budgetId = currentBudgetId else { return }
+            UserDefaults.standard.set(unreviewedTransactions, forKey: Self.unreviewedDefaultsKey(for: budgetId))
+            // A mark that is gone takes its "matched" note with it.
+            if !matchedTransactionIds.isSubset(of: unreviewedTransactions.keys) {
+                matchedTransactionIds.formIntersection(unreviewedTransactions.keys)
+            }
+        }
+    }
+
+    /// Which of `unreviewedTransactions` the bank sync didn't create but
+    /// matched: a transaction the budget already had, updated from the
+    /// download. Shown apart so a match is never silent.
+    @Published private(set) var matchedTransactionIds: Set<String> = [] {
+        didSet {
+            guard let budgetId = currentBudgetId, matchedTransactionIds != oldValue else { return }
+            UserDefaults.standard.set(matchedTransactionIds.sorted(), forKey: Self.matchedDefaultsKey(for: budgetId))
+        }
+    }
+
+    /// Whether a bank sync holds new transactions for approval instead of
+    /// importing them. How this device's owner likes to work, not budget
+    /// data, so it stays in UserDefaults.
+    @Published var stagesBankImports = UserDefaults.standard.bool(forKey: "bankSyncStagesImports") {
+        didSet { UserDefaults.standard.set(stagesBankImports, forKey: "bankSyncStagesImports") }
+    }
+
+    /// Downloaded transactions waiting for approval. Local to the device and
+    /// budget: nothing here is in the budget until it is approved.
+    @Published private(set) var stagedBankTransactions: [StagedBankTransaction] = [] {
+        didSet {
+            guard let budgetId = currentBudgetId, stagedBankTransactions != oldValue else { return }
+            UserDefaults.standard.set(
+                try? JSONEncoder().encode(stagedBankTransactions),
+                forKey: Self.stagedBankDefaultsKey(for: budgetId)
+            )
+        }
+    }
+
+    /// Provider ids turned down in the queue, by account, so the next
+    /// download doesn't offer them again.
+    private var rejectedBankImportIds: [String: Set<String>] = [:] {
+        didSet {
+            guard let budgetId = currentBudgetId, rejectedBankImportIds != oldValue else { return }
+            UserDefaults.standard.set(
+                rejectedBankImportIds.mapValues { $0.sorted() },
+                forKey: Self.rejectedBankDefaultsKey(for: budgetId)
+            )
+        }
+    }
+
     /// Accounts wired up to a bank feed, refreshed alongside the rest of the
     /// budget so the accounts tab knows which rows can be synced.
     @Published private(set) var bankSyncAccounts: [BankSyncAccount] = []
@@ -411,7 +506,11 @@ final class BudgetStore: ObservableObject {
     @Published private(set) var isSimpleFINConfigured = SimpleFINCredentials.isConfigured
     /// True for the length of a bank sync, so the UI can show progress and
     /// keep a second sync from starting on top of the first.
-    @Published private(set) var isBankSyncing = false
+    /// The accounts a running bank sync is downloading; empty when none is.
+    @Published private(set) var bankSyncingAccountIds: Set<String> = []
+    var isBankSyncing: Bool {
+        !bankSyncingAccountIds.isEmpty
+    }
 
     #if DEBUG
     var bankSyncBeforeMaterializationHook: (() -> Void)?
@@ -1013,6 +1112,96 @@ final class BudgetStore: ObservableObject {
         return Set(values)
     }
 
+    private static func stagedBankDefaultsKey(for budgetId: String) -> String {
+        "stagedBankTransactions.\(budgetId)"
+    }
+
+    private static func rejectedBankDefaultsKey(for budgetId: String) -> String {
+        "rejectedBankImports.\(budgetId)"
+    }
+
+    private static func loadStagedBankTransactions(for budgetId: String?) -> [StagedBankTransaction] {
+        guard let budgetId,
+              let data = UserDefaults.standard.data(forKey: stagedBankDefaultsKey(for: budgetId)) else { return [] }
+        return (try? JSONDecoder().decode([StagedBankTransaction].self, from: data)) ?? []
+    }
+
+    private static func loadRejectedBankImportIds(for budgetId: String?) -> [String: Set<String>] {
+        guard let budgetId,
+              let stored = UserDefaults.standard.dictionary(forKey: rejectedBankDefaultsKey(for: budgetId))
+              as? [String: [String]] else { return [:] }
+        return stored.mapValues(Set.init)
+    }
+
+    private static func matchedDefaultsKey(for budgetId: String) -> String {
+        "matchedTransactions.\(budgetId)"
+    }
+
+    private static func loadMatchedTransactionIds(for budgetId: String?) -> Set<String> {
+        guard let budgetId else { return [] }
+        return Set(UserDefaults.standard.stringArray(forKey: matchedDefaultsKey(for: budgetId)) ?? [])
+    }
+
+    private static func unreviewedDefaultsKey(for budgetId: String) -> String {
+        "unreviewedTransactions.\(budgetId)"
+    }
+
+    private static func loadUnreviewedTransactions(for budgetId: String?) -> [String: String] {
+        guard let budgetId else { return [:] }
+        return UserDefaults.standard.dictionary(forKey: unreviewedDefaultsKey(for: budgetId)) as? [String: String] ?? [:]
+    }
+
+    /// How many of an account's transactions are waiting to be looked at.
+    func unreviewedCount(forAccountId accountId: String) -> Int {
+        unreviewedTransactions.values.filter { $0 == accountId }.count
+    }
+
+    /// Split children are left out: the parent is the row the register shows.
+    private func markUnreviewed(_ transactions: [Transaction]) {
+        let fresh = transactions.filter { $0.parentId == nil }.map { ($0.id, $0.accountId) }
+        guard !fresh.isEmpty else { return }
+        unreviewedTransactions.merge(fresh) { _, new in new }
+    }
+
+    /// Transactions a sync matched and updated, as transaction id → account id.
+    private func markMatched(_ matched: [String: String]) {
+        guard !matched.isEmpty else { return }
+        unreviewedTransactions.merge(matched) { _, new in new }
+        matchedTransactionIds.formUnion(matched.keys)
+    }
+
+    /// Marks are only cleared on purpose, here or below: opening an account
+    /// or closing Review doesn't mean every new transaction in it was seen.
+    func markReviewed(_ transactionId: String) {
+        guard unreviewedTransactions[transactionId] != nil else { return }
+        unreviewedTransactions[transactionId] = nil
+    }
+
+    /// From the account's own screen, where only its transactions are in view.
+    func markAccountReviewed(_ accountId: String) {
+        guard unreviewedTransactions.values.contains(accountId) else { return }
+        unreviewedTransactions = unreviewedTransactions.filter { $0.value != accountId }
+    }
+
+    func markAllReviewed() {
+        guard !unreviewedTransactions.isEmpty else { return }
+        unreviewedTransactions = [:]
+    }
+
+    /// The transactions still marked new, newest first. Marks whose
+    /// transaction has since been deleted are dropped on the way.
+    func fetchUnreviewedTransactions() async -> [Transaction] {
+        let marked = unreviewedTransactions
+        guard let database,
+              let found = try? await database.fetchTransactions(ids: Array(marked.keys)) else { return [] }
+        let live = Set(found.map(\.id))
+        if live.count != marked.count {
+            // Only what this call looked up: a mark made during the read stays.
+            unreviewedTransactions = unreviewedTransactions.filter { marked[$0.key] == nil || live.contains($0.key) }
+        }
+        return found
+    }
+
     /// Closed accounts the Accounts list should show — none when the hide
     /// toggle is on. A view filter only: the All Accounts total still counts
     /// closed accounts, so hiding them can't quietly change the net worth on
@@ -1079,6 +1268,21 @@ final class BudgetStore: ObservableObject {
     @Published var recordPayeeLocations: Bool = true {
         didSet {
             UserDefaults.standard.set(recordPayeeLocations, forKey: "recordPayeeLocations")
+        }
+    }
+
+    /// Where Add Transaction defaults Save Location off (GH #845), so
+    /// entries made at home don't pin home to the payee. Device-only
+    /// UserDefaults, never synced and never a payee location.
+    @Published var homeLocation: Coordinates? {
+        didSet {
+            if let homeLocation {
+                UserDefaults.standard.set(
+                    [homeLocation.latitude, homeLocation.longitude], forKey: "homeLocation"
+                )
+            } else {
+                UserDefaults.standard.removeObject(forKey: "homeLocation")
+            }
         }
     }
 
@@ -1870,6 +2074,9 @@ final class BudgetStore: ObservableObject {
     /// (e.g. `saveTransaction`) can be exercised end-to-end without the
     /// file-system and server plumbing in `loadLocalBudget`.
     func configureForTesting(database: BudgetDatabase, syncClient: SyncClient) {
+        // Not the simulator's saved setting: someone trying the toggle there
+        // would otherwise hold back every import the suite expects.
+        _stagesBankImports = Published(initialValue: false)
         self.database = database
         self.syncClient = syncClient
         subscribeToSyncState()
@@ -2000,6 +2207,16 @@ final class BudgetStore: ObservableObject {
         _excludedFromSpentCategoryIds = Published(
             initialValue: Self.loadExcludedFromSpentCategoryIds(for: defaults.string(forKey: "currentBudgetId"))
         )
+        _unreviewedTransactions = Published(
+            initialValue: Self.loadUnreviewedTransactions(for: defaults.string(forKey: "currentBudgetId"))
+        )
+        _matchedTransactionIds = Published(
+            initialValue: Self.loadMatchedTransactionIds(for: defaults.string(forKey: "currentBudgetId"))
+        )
+        _stagedBankTransactions = Published(
+            initialValue: Self.loadStagedBankTransactions(for: defaults.string(forKey: "currentBudgetId"))
+        )
+        rejectedBankImportIds = Self.loadRejectedBankImportIds(for: defaults.string(forKey: "currentBudgetId"))
         _currencyCode = Published(
             initialValue: defaults.string(forKey: "currencyCode") ?? "USD"
         )
@@ -2087,6 +2304,7 @@ final class BudgetStore: ObservableObject {
         _recordPayeeLocations = Published(
             initialValue: persistedBool("recordPayeeLocations", default: true)
         )
+        _homeLocation = Published(initialValue: Self.loadHomeLocation(from: defaults))
         // bool(forKey:) defaults to false — the correct opt-in default.
         _hideZeroBudgetCategories = Published(initialValue: defaults
             .bool(forKey: "hideZeroBudgetCategories"))
@@ -2095,7 +2313,17 @@ final class BudgetStore: ObservableObject {
         _hideClosedAccounts = Published(initialValue: defaults
             .bool(forKey: "hideClosedAccounts"))
 
-        let token = loadAndMigrateAuthToken()
+        var token = loadAndMigrateAuthToken()
+        // The Keychain outlives a deleted app and UserDefaults doesn't, so a
+        // token with no server URL is what a reinstall leaves behind. It can't
+        // reach any server, and the encryption keys beside it would open
+        // budgets without asking for their password. Drop both and start
+        // signed out.
+        if token != nil, serverURL.isEmpty {
+            try? Keychain.remove(for: "authToken")
+            EncryptionKeyManager.removeAll()
+            token = nil
+        }
 
         // Load local budget if available. The saved session is configured in
         // the same task, before the load, so the initial sync below is
@@ -2329,6 +2557,7 @@ final class BudgetStore: ObservableObject {
         do {
             let token = try await serverClient.login(password: password)
             try? Keychain.set(token, for: "authToken")
+            budgetSelectionPromptPending = true
             isConnected = true
             await fetchRemoteBudgets()
         } catch {
@@ -2424,6 +2653,7 @@ final class BudgetStore: ObservableObject {
 
             await serverClient.setToken(token)
             try? Keychain.set(token, for: "authToken")
+            budgetSelectionPromptPending = true
             isConnected = true
             await fetchRemoteBudgets()
         } catch OpenIDAuthError.cancelled {
@@ -2468,6 +2698,7 @@ final class BudgetStore: ObservableObject {
                     try? EncryptionKeyManager.remove(fileId: fileId)
                 }
                 try? fileManager.deleteBudget(local.id)
+                AccountIconCustomizationStore.shared.clear(budgetID: local.id)
                 forgetCachedCurrencyCode(for: local.id)
                 forgetAppleWalletLinks(for: local.id)
             }
@@ -2481,7 +2712,13 @@ final class BudgetStore: ObservableObject {
         }
 
         isConnected = false
+        budgetSelectionPromptPending = false
+        // A list request still in flight is for the server being left; the
+        // next sign-in must not join it.
+        remoteBudgetsFetch?.cancel()
+        remoteBudgetsFetch = nil
         remoteBudgets = []
+        remoteBudgetsLoadFailed = false
         // Re-probe on the next connection in case the server URL changes.
         availableLoginMethods = []
         ownerExists = true
@@ -2555,6 +2792,7 @@ final class BudgetStore: ObservableObject {
         }
 
         try? fileManager.deleteBudget(local.id)
+        AccountIconCustomizationStore.shared.clear(budgetID: local.id)
         forgetCachedCurrencyCode(for: local.id)
         forgetAppleWalletLinks(for: local.id)
     }
@@ -2601,11 +2839,38 @@ final class BudgetStore: ObservableObject {
             return
         }
         #endif
+        // Signing in and the budget section appearing both ask for the list
+        // at the same moment. Share one request, so the first to finish can't
+        // clear the spinner or the error out from under the other.
+        if let remoteBudgetsFetch {
+            return await remoteBudgetsFetch.value
+        }
+        let fetch = Task {
+            await loadRemoteBudgets()
+            // Cleared here, not by the caller: a refresh arriving before the
+            // caller resumed would join a fetch that has already finished. A
+            // cancelled fetch was dropped by logout and may have a successor.
+            if !Task.isCancelled {
+                remoteBudgetsFetch = nil
+            }
+        }
+        remoteBudgetsFetch = fetch
+        await fetch.value
+    }
+
+    private var remoteBudgetsFetch: Task<Void, Never>?
+
+    /// Whether the last request for the server's budget list failed, so the
+    /// budget section can tell "couldn't ask" apart from "the server has none".
+    @Published private(set) var remoteBudgetsLoadFailed = false
+
+    private func loadRemoteBudgets() async {
         isLoading = true
         error = nil
 
         do {
             let files = try await serverClient.listFiles()
+            try Task.checkCancellation()
             remoteBudgets = files.map { file in
                 RemoteBudget(
                     id: file.fileId,
@@ -2614,14 +2879,30 @@ final class BudgetStore: ObservableObject {
                     isEncrypted: file.encryptKeyId != nil
                 )
             }
+            remoteBudgetsLoadFailed = false
         } catch {
-            self.error = error.localizedDescription
+            // Cancelled by logout: this answer belongs to the old session.
+            if !Task.isCancelled {
+                self.error = error.localizedDescription
+                remoteBudgetsLoadFailed = true
+            }
         }
 
         isLoading = false
     }
 
     func downloadBudget(_ remoteBudget: RemoteBudget) async {
+        // Outside the download spinner: the budget is on screen from here, it
+        // just isn't caught up yet.
+        if await downloadAndOpen(remoteBudget) {
+            await runInitialSync()
+        }
+    }
+
+    /// Downloads, imports and loads a budget. Returns whether it actually got
+    /// opened, so the initial sync runs only when there is something to catch
+    /// up.
+    private func downloadAndOpen(_ remoteBudget: RemoteBudget) async -> Bool {
         isLoading = true
         downloadingBudgetId = remoteBudget.id
         error = nil
@@ -2632,8 +2913,6 @@ final class BudgetStore: ObservableObject {
         syncClient = nil
         database = nil
 
-        // Whether the budget actually got opened, so the initial sync below
-        // runs only when there is something to catch up.
         var opened = false
 
         do {
@@ -2643,7 +2922,7 @@ final class BudgetStore: ObservableObject {
                     self.error = String(localized: "This budget is encrypted. Enter its encryption password to open it.")
                     isLoading = false
                     downloadingBudgetId = nil
-                    return
+                    return false
                 }
                 loadedKey = key
             }
@@ -2662,7 +2941,7 @@ final class BudgetStore: ObservableObject {
                     self.error = String(localized: "This budget's encryption key has changed. Re-enter the password.")
                     isLoading = false
                     downloadingBudgetId = nil
-                    return
+                    return false
                 }
                 guard let iv = meta.iv, let authTag = meta.authTag else {
                     throw ActualServerError.invalidResponse
@@ -2691,12 +2970,7 @@ final class BudgetStore: ObservableObject {
 
         isLoading = false
         downloadingBudgetId = nil
-
-        // Outside the download spinner: the budget is on screen from here, it
-        // just isn't caught up yet.
-        if opened {
-            await runInitialSync()
-        }
+        return opened
     }
 
     /// The first sync after a budget is opened. A downloaded budget is a server
@@ -2722,8 +2996,19 @@ final class BudgetStore: ObservableObject {
         } catch {
             return error.localizedDescription
         }
-        await downloadBudget(remoteBudget)
-        return error // any download error surfaced by downloadBudget
+        // The sheet waits for the budget to open, not for its initial sync:
+        // that catch-up can run for minutes on a long history, and holding
+        // the sheet for it left the user on a frozen form with no way out.
+        if await downloadAndOpen(remoteBudget) {
+            Task { await runInitialSync() }
+        } else {
+            // Loading the budget reads the key back from the Keychain, so it
+            // has to be stored before the download — but a key that opened
+            // nothing must not stay behind, or the next attempt would skip
+            // the password and retry on its own.
+            try? EncryptionKeyManager.remove(fileId: remoteBudget.id)
+        }
+        return error // any download error surfaced by downloadAndOpen
     }
 
     /// Mirror of upstream's validateBudgetName (util/budget-name.ts:23),
@@ -2986,6 +3271,9 @@ final class BudgetStore: ObservableObject {
             cardAccountMappings = fetchedCardMappings.merging(legacyCardMappings) { synced, _ in synced }
 
             accounts = fetchedAccounts
+            AccountIconCustomizationStore.shared.prune(
+                accounts: Set(fetchedAccounts.map(\.id)), budgetID: budgetId
+            )
             accountGroups = fetchedAccountGroups
             // Let observers establish their baseline before the transaction
             // publication is visible as a user change.
@@ -3219,6 +3507,13 @@ final class BudgetStore: ObservableObject {
             UserDefaults.standard.removeObject(
                 forKey: Self.excludedFromSpentDefaultsKey(for: DemoDataSeeder.budgetId)
             )
+            // The reseed mints new transaction ids, so old marks would only
+            // inflate the tray count.
+            markAllReviewed()
+            // The reseeded accounts have new ids, so what was waiting on the
+            // old ones could never be approved.
+            stagedBankTransactions = []
+            rejectedBankImportIds = [:]
             await loadLocalBudget(DemoDataSeeder.budgetId)
             do {
                 try DemoDataSeeder.seedPendingImports(store: pendingImports)
@@ -4482,6 +4777,11 @@ final class BudgetStore: ObservableObject {
         /// the detector behind `notifyAboutSyncedTransactions` only sees rows
         /// authored by *other* devices, which imports made here are not.
         var importedTransactions: [Transaction] = []
+        /// Transactions the budget already had that this run matched and
+        /// updated, as transaction id → account id.
+        var matchedTransactions: [String: String] = [:]
+        /// New transactions held for approval instead of imported.
+        var staged = 0
         /// Anything worth telling the person about: a bank connection that
         /// needs re-authenticating, an account SimpleFIN no longer knows.
         /// A run can succeed for some accounts and report problems for others.
@@ -4541,6 +4841,9 @@ final class BudgetStore: ObservableObject {
             if updated > 0 {
                 lines.append(ReportStrings.localized("Matched \(updated) transactions you already had.", locale: locale, bundle: bundle))
             }
+            if staged > 0 {
+                lines.append(ReportStrings.localized("\(staged) transactions waiting for approval.", locale: locale, bundle: bundle))
+            }
             // Only claim there was nothing to do when nothing went wrong
             // either — otherwise the problems below say what happened.
             if lines.isEmpty, problems.isEmpty {
@@ -4549,6 +4852,35 @@ final class BudgetStore: ObservableObject {
                     : ReportStrings.text("Everything is already up to date.", locale: locale, bundle: bundle))
             }
             return (lines + problems).joined(separator: "\n\n")
+        }
+    }
+
+    /// A clean bank sync's outcome, shown as a toast that goes away by
+    /// itself. A sync with problems goes to `bankSyncSummary` instead, whose
+    /// alert waits to be read.
+    struct BankSyncNotice: Equatable {
+        let text: String
+        /// Whether the sync left something in Review: transactions it marked
+        /// new, or ones it is holding for approval.
+        let offersReview: Bool
+    }
+
+    @Published private(set) var bankSyncNotice: BankSyncNotice?
+    private var bankSyncNoticeDismissTask: Task<Void, Never>?
+
+    func dismissBankSyncNotice() {
+        bankSyncNoticeDismissTask?.cancel()
+        bankSyncNotice = nil
+    }
+
+    private func showBankSyncNotice(_ notice: BankSyncNotice) {
+        bankSyncNoticeDismissTask?.cancel()
+        bankSyncNotice = notice
+        bankSyncNoticeDismissTask = Task { [weak self] in
+            // Longer when there is something to tap.
+            try? await Task.sleep(for: .seconds(notice.offersReview ? 8 : 4))
+            guard !Task.isCancelled else { return }
+            self?.bankSyncNotice = nil
         }
     }
 
@@ -4614,15 +4946,27 @@ final class BudgetStore: ObservableObject {
         return SimpleFINDirectProvider(client: simpleFINClient, accessKey: deviceKey)
     }
 
-    /// Run a sync and leave its outcome in `bankSyncSummary`. The button-shaped
-    /// entry point — `syncBankAccounts` is the one that throws.
+    /// Run a sync and leave its outcome in `bankSyncNotice`, or in
+    /// `bankSyncSummary` when something went wrong. The button-shaped entry
+    /// point — `syncBankAccounts` is the one that throws.
     func runBankSync(accountIds: [String] = []) async {
         // A tap that lands while a sync is already running does nothing — the
         // running sync posts its own summary, which would otherwise be
         // clobbered by this call's empty one.
         guard !isBankSyncing else { return }
         do {
-            bankSyncSummary = try await syncBankAccounts(accountIds: accountIds).summary
+            let result = try await syncBankAccounts(accountIds: accountIds)
+            if result.problems.isEmpty {
+                showBankSyncNotice(BankSyncNotice(
+                    // One line: the toast is a capsule.
+                    text: result.summary.replacingOccurrences(of: "\n\n", with: " "),
+                    offersReview: result.staged > 0
+                        || result.importedTransactions.contains { unreviewedTransactions[$0.id] != nil }
+                        || result.matchedTransactions.keys.contains { unreviewedTransactions[$0] != nil }
+                ))
+            } else {
+                bankSyncSummary = result.summary
+            }
         } catch {
             bankSyncSummary = error.localizedDescription
         }
@@ -4784,14 +5128,23 @@ final class BudgetStore: ObservableObject {
         let walletLinks = Dictionary(
             uniqueKeysWithValues: localLinks.map { ($0.accountId, $0.externalAccountId) }
         )
+        func stamped(_ linked: [BankSyncAccount]) async -> [BankSyncAccount] {
+            let stamps = await (try? database.fetchBankSyncStamps()) ?? [:]
+            return linked.map {
+                var account = $0
+                account.lastSync = stamps[$0.id]?.lastSync
+                account.status = stamps[$0.id]?.status
+                return account
+            }
+        }
         guard !walletLinks.isEmpty else {
+            let result = await stamped(synced)
             guard isCurrentRequest() else { return nil }
-            return synced
+            return result
         }
         let syncedById = Dictionary(uniqueKeysWithValues: synced.map { ($0.id, $0) })
         let budgetAccounts = await (try? database.fetchAccounts()) ?? fallbackAccounts ?? accounts
-        guard isCurrentRequest() else { return nil }
-        return budgetAccounts.compactMap { account in
+        let result = await stamped(budgetAccounts.compactMap { account in
             if let linked = syncedById[account.id] {
                 return linked
             }
@@ -4804,7 +5157,9 @@ final class BudgetStore: ObservableObject {
                 offBudget: account.offBudget,
                 closed: account.closed
             )
-        }
+        })
+        guard isCurrentRequest() else { return nil }
+        return result
     }
 
     /// The bank feed an account is wired up to, if any.
@@ -4944,7 +5299,7 @@ final class BudgetStore: ObservableObject {
     /// - Parameter accountIds: which accounts to sync; empty syncs every
     ///   linked one, which is what the accounts tab's sync button does.
     @discardableResult
-    func syncBankAccounts(accountIds: [String] = []) async throws -> BankSyncResult {
+    func syncBankAccounts(accountIds: [String] = [], stageNew: Bool? = nil) async throws -> BankSyncResult {
         var bankSyncHook: (() -> Void)?
         #if DEBUG
         bankSyncHook = bankSyncBeforeMaterializationHook
@@ -4974,10 +5329,13 @@ final class BudgetStore: ObservableObject {
         // Nothing may suspend between the isBankSyncing guard above and this
         // write — an await in that window would let a second call slip past
         // the guard and import everything twice.
-        isBankSyncing = true
-        defer { isBankSyncing = false }
+        bankSyncingAccountIds = Set((simpleFinTargets + walletTargets).map(\.id))
+        defer { bankSyncingAccountIds = [] }
+        // An account's first download is its history, not news.
+        let firstSyncAccountIds = Set(linked.filter { $0.lastSync == nil }.map(\.id))
 
         var result = BankSyncResult()
+        let staging: BankSyncStaging = stageNew ?? stagesBankImports ? .holdNew : .importAll
 
         // Wallet links and Wallet data both live only on this device. Where
         // FinanceKit can't serve them, skip quietly unless access was revoked.
@@ -5140,7 +5498,7 @@ final class BudgetStore: ObservableObject {
                 result.problems.append("\(target.name): \(problem)")
             }
             do {
-                let outcome: (added: Int, updated: Int, inserted: [Transaction], rejectedConflicts: Int)
+                let outcome: BankSyncImportOutcome
                 do {
                     outcome = try await importBankSync(
                         download,
@@ -5148,6 +5506,7 @@ final class BudgetStore: ObservableObject {
                         existingOldestDay: oldestDates[target.id],
                         startingDay: targetStartDays[target.id]!,
                         prepared: prepared,
+                        staging: staging,
                         bankSyncHook: takeBankSyncHook()
                     )
                 } catch let error as BankSyncDatabaseError where error == .bankSyncRulesChanged {
@@ -5158,8 +5517,13 @@ final class BudgetStore: ObservableObject {
                         existingOldestDay: oldestDates[target.id],
                         startingDay: targetStartDays[target.id]!,
                         prepared: retryPrepared,
+                        staging: staging,
                         bankSyncHook: nil
                     )
+                }
+                result.staged += outcome.staged
+                for id in outcome.matchedIds {
+                    result.matchedTransactions[id] = target.id
                 }
                 result.added += outcome.added
                 result.updated += outcome.updated
@@ -5208,9 +5572,26 @@ final class BudgetStore: ObservableObject {
         // failing the sync over — the transactions are already in.
         try? await syncClient.recordBankSyncStatus(statuses)
 
+        markUnreviewed(result.importedTransactions.filter { !firstSyncAccountIds.contains($0.accountId) })
+        markMatched(result.matchedTransactions.filter { !firstSyncAccountIds.contains($0.value) })
         await refreshDataOnly()
         return result
     }
+
+    /// What an import does with downloads the budget doesn't have yet.
+    private enum BankSyncStaging {
+        /// Insert them, as a sync always did.
+        case importAll
+        /// Leave them in `stagedBankTransactions` for approval.
+        case holdNew
+        /// Insert them: these are staged rows the person just approved.
+        case approving
+    }
+
+    private typealias BankSyncImportOutcome = (
+        added: Int, updated: Int, inserted: [Transaction], rejectedConflicts: Int, staged: Int,
+        matchedIds: Set<String>
+    )
 
     /// Fold one account's download into the budget: match what we already
     /// have, insert what we don't.
@@ -5220,8 +5601,9 @@ final class BudgetStore: ObservableObject {
         existingOldestDay: Int?,
         startingDay: Int,
         prepared: SyncClient.PreparedRules,
+        staging: BankSyncStaging,
         bankSyncHook: (() -> Void)?
-    ) async throws -> (added: Int, updated: Int, inserted: [Transaction], rejectedConflicts: Int) {
+    ) async throws -> BankSyncImportOutcome {
         guard let database, let syncClient else { throw BudgetStoreError.syncNotConfigured }
 
         // The provider already dropped anything older than this account's own
@@ -5241,7 +5623,7 @@ final class BudgetStore: ObservableObject {
         }
 
         guard !candidates.isEmpty || !download.rejectedIds.isEmpty || existingOldestDay == nil else {
-            return (0, 0, [], 0)
+            return (0, 0, [], 0, 0, [])
         }
         let earliest = candidates.map(\.date).min() ?? startingDay
         let latest = candidates.map(\.date).max() ?? startingDay
@@ -5290,10 +5672,17 @@ final class BudgetStore: ObservableObject {
             importedIds: Set(candidates.map(\.importedId))
         )
 
-        let plan = BankSyncReconciler.plan(
+        var plan = BankSyncReconciler.plan(
             candidates: candidates,
             existing: window,
             reimportDeleted: reimportDeleted
+        )
+        let staged = settleStagedBankTransactions(
+            plan: &plan, download: download, candidates: candidates,
+            target: target, startingDay: startingDay,
+            // An account's first download is its history and sets its opening
+            // balance from what it inserts, so it is never held back.
+            staging: staging == .holdNew && existingOldestDay == nil ? .importAll : staging
         )
 
         let expectedLink = ExpectedBankSyncLink(
@@ -5442,7 +5831,134 @@ final class BudgetStore: ObservableObject {
         }
 
         let added = materialized.inserted.count + (openingInsert == nil ? 0 : 1)
-        return (added, materialized.updatedCount, materialized.inserted, plan.rejectedConflicts)
+        return (
+            added, materialized.updatedIds.count, materialized.inserted, plan.rejectedConflicts, staged,
+            materialized.updatedIds
+        )
+    }
+
+    /// Bring the approval queue in line with one account's download, and take
+    /// out of `plan` whatever isn't to be inserted now. Returns how many
+    /// transactions this left newly waiting.
+    private func settleStagedBankTransactions(
+        plan: inout BankSyncPlan,
+        download: BankSyncDownload,
+        candidates: [BankSyncCandidate],
+        target: BankSyncAccount,
+        startingDay: Int,
+        staging: BankSyncStaging
+    ) -> Int {
+        // Turned down once is turned down for good, whatever the setting is now.
+        let rejected = rejectedBankImportIds[target.id] ?? []
+        plan.inserts.removeAll { rejected.contains($0.importedId) }
+        let newIds = Set(plan.inserts.map(\.importedId))
+        let downloadedIds = Set(candidates.map(\.importedId))
+        // A complete download lists everything the bank still has from
+        // `startingDay` on; an approval replays the queue, not the bank.
+        let complete = staging != .approving && download.status == "ok" && download.accountDataReceived
+        let sentIds = Set(download.candidates.map(\.importedId))
+
+        var queue = stagedBankTransactions
+        let waitingBefore = Set(queue.filter { $0.accountId == target.id }.map(\.importedId))
+        // Gone from the queue: what the bank voided, what has since matched a
+        // transaction the budget has, what is being inserted right now, and
+        // what the bank stopped sending inside the stretch it covers. That
+        // last is most often a pending charge that posted under a new id;
+        // kept, approving both copies would import the charge twice.
+        queue.removeAll {
+            $0.accountId == target.id && (
+                download.rejectedIds.contains($0.importedId)
+                    || (downloadedIds.contains($0.importedId) && !newIds.contains($0.importedId))
+                    || (staging != .holdNew && newIds.contains($0.importedId))
+                    || (complete && $0.date > startingDay && !sentIds.contains($0.importedId))
+            )
+        }
+        var newlyWaiting = 0
+        if staging == .holdNew {
+            // The latest copy wins: a pending charge may have posted, or
+            // settled for a different amount, since it was first held.
+            queue.removeAll { $0.accountId == target.id && newIds.contains($0.importedId) }
+            for importedId in newIds.sorted() {
+                let copies = plan.inserts.filter { $0.importedId == importedId }
+                queue.append(StagedBankTransaction(
+                    accountId: target.id, candidate: copies[0], occurrences: copies.count
+                ))
+            }
+            newlyWaiting = newIds.subtracting(waitingBefore).count
+            plan.inserts = []
+        }
+        stagedBankTransactions = queue.sorted { ($0.date, $0.id) > ($1.date, $1.id) }
+
+        // ponytail: a rejected id is remembered until the bank stops sending
+        // it, read off complete downloads only. A feed that drops a row and
+        // later brings it back would offer it again.
+        if complete, !rejected.isEmpty {
+            let stillSent = rejected.intersection(download.candidates.map(\.importedId))
+            rejectedBankImportIds[target.id] = stillSent.isEmpty ? nil : stillSent
+        }
+        return newlyWaiting
+    }
+
+    /// Import staged transactions the person approved, through the same
+    /// matching and rules as a sync: one entered by hand in the meantime is
+    /// matched, not duplicated.
+    func approveStagedBankTransactions(_ items: [StagedBankTransaction]) async throws {
+        guard let database, let syncClient else { throw BudgetStoreError.syncNotConfigured }
+        // The same guard a sync takes, and for the same reason.
+        guard !isBankSyncing else { return }
+        let byAccount = Dictionary(grouping: items, by: \.accountId)
+        bankSyncingAccountIds = Set(byAccount.keys)
+        defer { bankSyncingAccountIds = [] }
+
+        var firstError: (any Error)?
+        for (accountId, staged) in byAccount {
+            do {
+                guard let target = bankSyncAccount(forAccountId: accountId) else {
+                    throw BudgetStoreError.bankSyncAccountNotLinked
+                }
+                let download = BankSyncDownload(
+                    candidates: staged.flatMap { Array(repeating: $0.candidate, count: $0.occurrences) },
+                    accountDataReceived: true
+                )
+                let oldest = try await database.oldestTransactionDate(accountId: accountId)
+                let startingDay = staged.map(\.date).min() ?? DayDate.today().yyyymmdd
+                do {
+                    _ = try await importBankSync(
+                        download, into: target, existingOldestDay: oldest, startingDay: startingDay,
+                        prepared: syncClient.prepareRules(), staging: .approving, bankSyncHook: nil
+                    )
+                } catch let error as BankSyncDatabaseError where error == .bankSyncRulesChanged {
+                    _ = try await importBankSync(
+                        download, into: target, existingOldestDay: oldest, startingDay: startingDay,
+                        prepared: syncClient.prepareRules(), staging: .approving, bankSyncHook: nil
+                    )
+                }
+            } catch {
+                // The import writes in one transaction, so a failure left these
+                // out of the budget. The queue dropped them before the write.
+                let waiting = Set(stagedBankTransactions.map(\.id))
+                stagedBankTransactions = (stagedBankTransactions + staged.filter { !waiting.contains($0.id) })
+                    .sorted { ($0.date, $0.id) > ($1.date, $1.id) }
+                firstError = firstError ?? error
+            }
+        }
+        await refreshDataOnly()
+        if let firstError {
+            throw firstError
+        }
+    }
+
+    /// Drop staged transactions and remember them, so the next download
+    /// doesn't bring them back.
+    func rejectStagedBankTransactions(_ items: [StagedBankTransaction]) {
+        guard !items.isEmpty else { return }
+        var rejected = rejectedBankImportIds
+        for item in items {
+            rejected[item.accountId, default: []].insert(item.importedId)
+        }
+        rejectedBankImportIds = rejected
+        let ids = Set(items.map(\.id))
+        stagedBankTransactions.removeAll { ids.contains($0.id) }
     }
 
     /// Keep a backfill balance-neutral. Without this the account drifts from
@@ -5594,14 +6110,16 @@ final class BudgetStore: ObservableObject {
     /// Re-save an existing transfer: both legs take the new accounts, amount,
     /// date, notes and cleared state, with payees remapped to the (possibly
     /// re-targeted) accounts' transfer payees. `original` is whichever leg the
-    /// user opened; its partner is fetched through `transferId`. A category
-    /// survives only on an on-budget leg whose partner account is off-budget
+    /// user opened, on the source side when `openedLegIsSource`; its partner
+    /// is fetched through `transferId`. A category survives only on an
+    /// on-budget leg whose partner account is off-budget
     /// (Actual's rule — money leaving the budget still needs a category);
     /// every other configuration clears it.
     func updateTransfer(
         original: Transaction,
         fromAccountId: String,
         toAccountId: String,
+        openedLegIsSource: Bool,
         amountCents: Int,
         date: Int,
         notes: String?,
@@ -5638,8 +6156,9 @@ final class BudgetStore: ObservableObject {
             return leg.id == original.id ? categoryId : leg.categoryId
         }
 
-        // The opened row can be either leg; the negative one is the source.
-        let (sourceLeg, targetLeg) = original.amount < 0
+        // The form says which side the opened row is on, so a reversal flips
+        // the amounts in place as Actual's updateTransfer does (GH #844).
+        let (sourceLeg, targetLeg) = openedLegIsSource
             ? (original, partner) : (partner, original)
 
         var source = sourceLeg
@@ -5662,14 +6181,12 @@ final class BudgetStore: ObservableObject {
         target.notes = notes
         target.cleared = cleared
 
-        let sourceChanges = Self.changedFields(original: sourceLeg, updated: source)
-        if !sourceChanges.isEmpty {
-            try await syncClient.updateTransaction(source, changedFields: sourceChanges)
-        }
-        let targetChanges = Self.changedFields(original: targetLeg, updated: target)
-        if !targetChanges.isEmpty {
-            try await syncClient.updateTransaction(target, changedFields: targetChanges)
-        }
+        // One write for both legs: another device must never sync half a
+        // reversal or a transfer whose amounts disagree.
+        let updates = [(source, sourceLeg), (target, targetLeg)]
+            .map { (transaction: $0.0, changedFields: Self.changedFields(original: $0.1, updated: $0.0)) }
+            .filter { !$0.changedFields.isEmpty }
+        try await syncClient.updateTransactions(updates)
         await refreshDataOnly()
     }
 
@@ -6375,10 +6892,19 @@ final class BudgetStore: ObservableObject {
         /// transactions record: an edit happens wherever the phone is now,
         /// not where the transaction did (GH #794).
         var recordLocation: Bool = true
+        /// False skips recording when the phone is near Home (GH #845). The
+        /// form's at-home default can lose a race with a fast save, so the
+        /// recorder checks again; only a user who turned Save Location on
+        /// passes true. Defaults on so other callers are unchanged.
+        var recordLocationNearHome: Bool = true
         var reviewConfirmations: Set<PendingImportReviewRequirement> = []
         /// True for a picker choice or prefill; false for payee-history suggestions.
         var categoryIsExplicit: Bool = false
         var automaticCategoryPreview: AutomaticCategoryPreview?
+        /// For an existing transfer, whether the opened leg is the source. The
+        /// from/to pair can't say which end holds the opened row once both
+        /// accounts move, and the sign is the direction (GH #844).
+        var transferOpenedLegIsSource: Bool = true
 
         /// Category the rules pass starts from: an explicit pick stands, and an
         /// untouched preview reverts to its pre-rule source so rules run once.
@@ -6617,6 +7143,7 @@ final class BudgetStore: ObservableObject {
                     original: original,
                     fromAccountId: form.accountId,
                     toAccountId: toAccountId,
+                    openedLegIsSource: form.transferOpenedLegIsSource,
                     amountCents: amountCents,
                     date: date,
                     notes: notes,
@@ -6771,7 +7298,7 @@ final class BudgetStore: ObservableObject {
             await publishTransactionsImmediately([parent.id])
             await refreshDataOnly()
             if form.recordLocation, let payeeId {
-                recordPayeeLocationIfAppropriate(payeeId: payeeId)
+                recordPayeeLocationIfAppropriate(payeeId: payeeId, nearHome: form.recordLocationNearHome)
             }
             return nil
 
@@ -6846,7 +7373,7 @@ final class BudgetStore: ObservableObject {
                     showImpact: true
                 )
                 if form.recordLocation, let payeeId {
-                    recordPayeeLocationIfAppropriate(payeeId: payeeId)
+                    recordPayeeLocationIfAppropriate(payeeId: payeeId, nearHome: form.recordLocationNearHome)
                 }
                 return transaction.id
             }
@@ -7409,10 +7936,56 @@ final class BudgetStore: ObservableObject {
         }
     }
 
+    /// Fixed radius for a first version: wide enough for indoor GPS drift,
+    /// narrow enough to spare the shop down the street.
+    static let homeRadiusMeters: Double = 150
+
+    static func loadHomeLocation(from defaults: UserDefaults) -> Coordinates? {
+        guard let pair = defaults.array(forKey: "homeLocation") as? [Double], pair.count == 2 else { return nil }
+        return Coordinates(latitude: pair[0], longitude: pair[1])
+    }
+
+    static func isNearHome(_ position: Coordinates, home: Coordinates?) -> Bool {
+        guard let home else { return false }
+        return LocationUtils.calculateDistanceMeters(
+            lat1: position.latitude, lon1: position.longitude,
+            lat2: home.latitude, lon2: home.longitude
+        ) <= homeRadiusMeters
+    }
+
+    /// Whether a new transaction should default Save Location off. Never
+    /// prompts for permission: without a Home there is nothing to check.
+    /// Skips the server gate on purpose: it settles only after budget load,
+    /// later than the Add form's first appearance, and hides the toggle anyway.
+    func isAtHome() async -> Bool {
+        guard recordPayeeLocations, let homeLocation else { return false }
+        let provider = payeeLocationProvider
+        guard await provider.authorizationStatus() == .granted,
+              let position = try? await provider.currentPosition() else {
+            return false
+        }
+        return Self.isNearHome(position, home: homeLocation)
+    }
+
+    /// Set Home to the current position, asking for permission on first
+    /// use. False when no valid fix is available.
+    func setHomeToCurrentLocation() async -> Bool {
+        let provider = payeeLocationProvider
+        if await provider.authorizationStatus() == .notDetermined {
+            _ = await provider.requestPermission()
+        }
+        guard let position = try? await provider.currentPosition(),
+              LocationUtils.isValidCoordinate(latitude: position.latitude, longitude: position.longitude) else {
+            return false
+        }
+        homeLocation = position
+        return true
+    }
+
     /// Fire-and-forget: attach the current position to `payeeId`. All guards
     /// and failures collapse to "do nothing" — recording a location must
     /// never affect the save that triggered it.
-    func recordPayeeLocationIfAppropriate(payeeId: String) {
+    func recordPayeeLocationIfAppropriate(payeeId: String, nearHome: Bool = true) {
         guard payeeLocationWritesEnabled, recordPayeeLocations else { return }
         payeeLocationTask = Task { [weak self] in
             guard let self else { return }
@@ -7422,6 +7995,7 @@ final class BudgetStore: ObservableObject {
                   LocationUtils.isValidCoordinate(
                       latitude: position.latitude, longitude: position.longitude
                   ),
+                  nearHome || !Self.isNearHome(position, home: self.homeLocation),
                   let database = self.database,
                   let existing = try? await database.fetchPayeeLocations(payeeId: payeeId),
                   Self.shouldRecordLocation(at: position, existing: existing),

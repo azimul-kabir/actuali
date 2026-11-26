@@ -15,6 +15,10 @@ final class SettingsNavigationUITests: XCTestCase {
                 app.switches["notifications.creditCardDueReminders"].waitForExistence(timeout: 5),
                 "Credit Card Due Reminders should be available alongside transaction alerts"
             )
+            XCTAssertTrue(
+                app.switches["notifications.shortcutTransactionConfirmation"].waitForExistence(timeout: 5),
+                "Shortcut Transaction Confirmation should be available in Notifications"
+            )
         case "Display":
             content = app.buttons.matching(
                 NSPredicate(format: "label BEGINSWITH 'Currency'")
@@ -159,6 +163,46 @@ final class SettingsNavigationUITests: XCTestCase {
     }
 
     @MainActor
+    func testShortcutTransactionConfirmationTogglePersistsAcrossLaunches() {
+        let app = XCUIApplication()
+        let demoLaunchArguments = ["-loadDemoData", "-initialTab", "4"]
+        app.launchArguments = demoLaunchArguments + [
+            "-resetShortcutTransactionConfirmationForUITest",
+        ]
+        app.launch()
+
+        let settingsRow = rowOnHub("Notifications", in: app)
+        XCTAssertTrue(settingsRow.waitForExistence(timeout: 5))
+        settingsRow.tap()
+
+        XCTAssertTrue(app.navigationBars["Notifications"].waitForExistence(timeout: 5))
+        let toggle = app.switches["notifications.shortcutTransactionConfirmation"]
+        XCTAssertTrue(toggle.waitForExistence(timeout: 5))
+        XCTAssertEqual(toggle.value as? String, "1", "The test fixture should start enabled")
+
+        // Only turn the setting off. Enabling it would open the system
+        // notification-permission prompt and make the test tap nondeterministic.
+        // Some SwiftUI Form toggles expose a container switch around the
+        // actual control. Use the same inner-switch-aware helper as the
+        // other notification settings UI tests.
+        tapControl(toggle) { toggle.value as? String == "0" }
+        XCTAssertEqual(toggle.value as? String, "0")
+
+        app.terminate()
+        app.launchArguments = demoLaunchArguments
+        app.launch()
+
+        let reopenedSettingsRow = rowOnHub("Notifications", in: app)
+        XCTAssertTrue(reopenedSettingsRow.waitForExistence(timeout: 5))
+        reopenedSettingsRow.tap()
+
+        XCTAssertTrue(app.navigationBars["Notifications"].waitForExistence(timeout: 5))
+        let reopenedToggle = app.switches["notifications.shortcutTransactionConfirmation"]
+        XCTAssertTrue(reopenedToggle.waitForExistence(timeout: 5))
+        XCTAssertEqual(reopenedToggle.value as? String, "0")
+    }
+
+    @MainActor
     func testAutomationsEditorToggleDependencyInSettings() {
         let disabledApp = XCUIApplication()
         disabledApp.launchArguments = ["-loadDemoData", "-initialTab", "4"]
@@ -274,6 +318,36 @@ final class SettingsNavigationUITests: XCTestCase {
         XCTAssertFalse(app.buttons["Other Budget"].waitForExistence(timeout: 2))
         XCTAssertFalse(app.buttons["Encrypted Budget"].waitForExistence(timeout: 2))
         XCTAssertTrue(app.buttons["budget-selection-selected"].exists)
+    }
+
+    /// An encrypted budget with no key on this device (never unlocked, or its
+    /// key was dropped after the password changed) asks for the password.
+    @MainActor
+    func testBudgetSelectionPickerAsksForPasswordOfEncryptedBudget() {
+        let app = XCUIApplication()
+        app.launchArguments = [
+            "-loadDemoData",
+            "-connectedServerSettings",
+            "-budgetSelectionFixture",
+            "-initialTab",
+            "4",
+        ]
+        app.launch()
+
+        let row = app.buttons["Connection & Data"]
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        row.tap()
+
+        let selected = app.buttons["budget-selection-selected"]
+        XCTAssertTrue(selected.waitForExistence(timeout: 5))
+        selected.tap()
+
+        let encrypted = app.buttons["Encrypted Budget"]
+        XCTAssertTrue(encrypted.waitForExistence(timeout: 5))
+        encrypted.tap()
+
+        XCTAssertTrue(app.navigationBars["Unlock Budget"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.secureTextFields["Encryption password"].exists)
     }
 
     @MainActor

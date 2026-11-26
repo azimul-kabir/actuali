@@ -1060,6 +1060,18 @@ final class BudgetDatabase: Sendable {
         }
     }
 
+    /// The live transactions among `ids`, newest first, with display names.
+    func fetchTransactions(ids: [String]) async throws -> [Transaction] {
+        guard !ids.isEmpty else { return [] }
+        return try await dbQueue.read { db in
+            let placeholders = Array(repeating: "?", count: ids.count).joined(separator: ", ")
+            return try Row.fetchAll(db, sql: Self.transactionSelect + """
+             AND t.id IN (\(placeholders))
+            ORDER BY t.date DESC, t.sort_order DESC
+            """, arguments: StatementArguments(ids)).map(Self.mapTransaction)
+        }
+    }
+
     /// Rows per page in the transaction lists. One page is the default for
     /// `fetchTransactions`, and TransactionPager treats a shorter page as
     /// the end of the result set.
@@ -3491,20 +3503,19 @@ final class BudgetDatabase: Sendable {
     /// is the convergent outcome.
     private static func insertMessageRows(_ db: Database, _ messages: [CRDTMessage]) throws -> [CRDTMessage] {
         var inserted: [CRDTMessage] = []
+        // Compiled once for the batch, not once per message.
+        let insert = try db.cachedStatement(sql: """
+        INSERT OR IGNORE INTO messages_crdt (timestamp, dataset, row, column, value)
+        VALUES (?, ?, ?, ?, ?)
+        """)
         for msg in messages {
-            try db.execute(
-                sql: """
-                INSERT OR IGNORE INTO messages_crdt (timestamp, dataset, row, column, value)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                arguments: [
-                    msg.timestamp.toString(),
-                    msg.dataset,
-                    msg.row,
-                    msg.column,
-                    msg.value,
-                ]
-            )
+            try insert.execute(arguments: [
+                msg.timestamp.toString(),
+                msg.dataset,
+                msg.row,
+                msg.column,
+                msg.value,
+            ])
             if db.changesCount > 0 {
                 inserted.append(msg)
             }
@@ -3575,12 +3586,14 @@ final class BudgetDatabase: Sendable {
     func filterNewMessages(_ messages: [CRDTMessage]) throws -> [CRDTMessage] {
         try dbQueue.read { db in
             var newMessages: [CRDTMessage] = []
+            // Compiled once for the batch, not once per message.
+            let newer = try db.cachedStatement(sql: """
+            SELECT timestamp FROM messages_crdt
+            WHERE dataset = ? AND row = ? AND column = ? AND timestamp >= ?
+            """)
 
             for msg in messages {
-                let existing = try Row.fetchOne(db, sql: """
-                SELECT timestamp FROM messages_crdt
-                WHERE dataset = ? AND row = ? AND column = ? AND timestamp >= ?
-                """, arguments: [
+                let existing = try Row.fetchOne(newer, arguments: [
                     msg.dataset,
                     msg.row,
                     msg.column,
@@ -3657,20 +3670,17 @@ final class BudgetDatabase: Sendable {
         rowId: String,
         value: DatabaseValue
     ) throws {
-        let exists = try Row.fetchOne(db, sql: """
-        SELECT id FROM \(table) WHERE id = ?
-        """, arguments: [rowId]) != nil
+        // Cached by SQL text, so a batch compiles each table/column pair once.
+        let exists = try Row.fetchOne(
+            db.cachedStatement(sql: "SELECT id FROM \(table) WHERE id = ?"), arguments: [rowId]
+        ) != nil
 
         if exists {
-            try db.execute(
-                sql: "UPDATE \(table) SET \(column) = ? WHERE id = ?",
-                arguments: [value, rowId]
-            )
+            try db.cachedStatement(sql: "UPDATE \(table) SET \(column) = ? WHERE id = ?")
+                .execute(arguments: [value, rowId])
         } else {
-            try db.execute(
-                sql: "INSERT INTO \(table) (id, \(column)) VALUES (?, ?)",
-                arguments: [rowId, value]
-            )
+            try db.cachedStatement(sql: "INSERT INTO \(table) (id, \(column)) VALUES (?, ?)")
+                .execute(arguments: [rowId, value])
         }
     }
 
@@ -4268,6 +4278,27 @@ final class BudgetDatabase: Sendable {
         }
     }
 
+    /// What bank sync last stamped on each account: when a download last
+    /// completed and how the latest attempt ended. Keyed by account id, and
+    /// read apart from `fetchBankSyncAccounts` because Wallet links aren't in
+    /// the columns that query filters on but are stamped all the same.
+    func fetchBankSyncStamps() async throws -> [String: (lastSync: Date?, status: String?)] {
+        try await dbQueue.read { db in
+            let columns = try db.columns(in: "accounts").map(\.name)
+            guard columns.contains("last_sync"), columns.contains("bank_sync_status") else { return [:] }
+            let rows = try Row.fetchAll(db, sql: """
+            SELECT id, last_sync, bank_sync_status FROM accounts
+            WHERE last_sync IS NOT NULL OR bank_sync_status IS NOT NULL
+            """)
+            return Dictionary(uniqueKeysWithValues: rows.map { row in
+                // Milliseconds since the epoch as a string, as upstream writes it.
+                let lastSync = (row["last_sync"] as String?).flatMap { Double($0) }
+                    .map { Date(timeIntervalSince1970: $0 / 1000) }
+                return (row["id"] as String, (lastSync: lastSync, status: row["bank_sync_status"] as String?))
+            })
+        }
+    }
+
     /// The transactions a download could be matching, projected down to the
     /// columns `BankSyncReconciler` reads. Fuzzy candidates are bounded by
     /// date; exact provider IDs are included account-wide.
@@ -4407,7 +4438,7 @@ final class BudgetDatabase: Sendable {
         openingUpdate: BankSyncOpeningUpdate?,
         expectedLink: ExpectedBankSyncLink,
         rulesFingerprint: BankSyncRulesFingerprint
-    ) throws -> (updatedCount: Int, inserted: [Transaction], messages: [CRDTMessage]) {
+    ) throws -> (updatedIds: Set<String>, inserted: [Transaction], messages: [CRDTMessage]) {
         try dbQueue.write { db in
             if try Self.rulesFingerprint(db) != rulesFingerprint {
                 throw BankSyncDatabaseError.bankSyncRulesChanged
@@ -4522,7 +4553,7 @@ final class BudgetDatabase: Sendable {
                 }
                 allMessages += try Self.insertMessageRows(db, openingUpdate.messages)
             }
-            return (appliedIds.count, inserted, allMessages)
+            return (appliedIds, inserted, allMessages)
         }
     }
 
